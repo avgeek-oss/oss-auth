@@ -38,13 +38,14 @@ async function role(s: Stack): Promise<string | undefined> {
   return ((await response.json()) as { role: string }).role;
 }
 
-async function auditTypes(s: Stack): Promise<string[]> {
+/** The stack's sessions, oldest first, and whether each is revoked. */
+async function sessionStates(s: Stack): Promise<boolean[]> {
   return (
-    await rows<{ type: string }>(
+    await rows<{ revoked: boolean }>(
       s,
-      `SELECT type FROM {schema}.audit_events ORDER BY id`,
+      `SELECT revoked_at IS NOT NULL AS "revoked" FROM {schema}.sessions ORDER BY created_at`,
     )
-  ).map((r) => r.type);
+  ).map((r) => r.revoked);
 }
 
 describe.skipIf(!databaseUrl)("sign-in", () => {
@@ -64,7 +65,7 @@ describe.skipIf(!databaseUrl)("sign-in", () => {
       session: { amr: ["mfa"] },
     });
     expect((await s.call("/api/me")).status).toBe(200);
-    expect(await auditTypes(s)).toEqual(["user.created", "session.created"]);
+    expect(await sessionStates(s)).toEqual([false]);
 
     const out = await s.call("/auth/sign-out", { method: "POST" });
     expect(out.status).toBe(200);
@@ -77,7 +78,7 @@ describe.skipIf(!databaseUrl)("sign-in", () => {
     expect(await s.call("/api/me").then((r) => r.json())).toEqual({
       error: { code: "unauthenticated", message: "Sign in to continue." },
     });
-    expect((await auditTypes(s)).at(-1)).toBe("session.revoked");
+    expect(await sessionStates(s)).toEqual([true]);
   });
 
   it("stores only the token's hash, with the provider's sid and amr", async () => {
@@ -150,11 +151,7 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
       reason: "no_role",
     });
     expect(await rows(s, "SELECT 1 FROM {schema}.users")).toEqual([]);
-    const [denied] = await rows<{ data: unknown; actor: string }>(
-      s,
-      `SELECT data, actor_type AS "actor" FROM {schema}.audit_events`,
-    );
-    expect(denied).toEqual({ data: { reason: "no_role" }, actor: "idp" });
+    expect(await sessionStates(s)).toEqual([]);
   });
 
   it("refuses a user whose groups map to no role", async () => {
@@ -189,6 +186,12 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
     s.mock.setUser({ sub: "ada", email: "ada@example.org", name: "Ada L" });
     await s.signIn();
     expect(await role(s)).toBe("member");
+    expect(
+      await rows(
+        s,
+        `SELECT email, display_name AS "displayName" FROM {schema}.users WHERE sub = 'ada'`,
+      ),
+    ).toEqual([{ email: "ada@example.org", displayName: "Ada L" }]);
 
     s.mock.setUser({
       sub: "ada",
@@ -200,25 +203,12 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
 
     s.mock.setUser({ sub: "ada", groups: ["unrelated"] });
     expect(failure(await s.signIn()).reason).toBe("no_role");
-    const changes = await rows<{ type: string; data: unknown }>(
-      s,
-      `SELECT type, data FROM {schema}.audit_events
-       WHERE type IN ('user.updated', 'user.role_changed') ORDER BY id`,
-    );
-    expect(changes).toEqual([
-      {
-        type: "user.updated",
-        data: { source: "oidc", fields: ["email", "display_name"] },
-      },
-      {
-        type: "user.updated",
-        data: { source: "oidc", fields: ["display_name"] },
-      },
-      {
-        type: "user.role_changed",
-        data: { source: "oidc", from: "member", to: "admin" },
-      },
-    ]);
+    expect(
+      await rows(
+        s,
+        `SELECT role, role_source AS "source" FROM {schema}.users WHERE sub = 'ada'`,
+      ),
+    ).toEqual([{ role: "admin", source: "oidc" }]);
   });
 
   it("refuses a deactivated or deleted user and ends their sessions", async () => {
@@ -480,11 +470,7 @@ describe.skipIf(!databaseUrl)("callback attacks", () => {
     expect(second).not.toBe(first);
     expect(await s.auth.sessions.lookup(first)).toBeNull();
     expect(await s.auth.sessions.lookup(second)).not.toBeNull();
-    const [replaced] = await rows<{ data: unknown }>(
-      s,
-      `SELECT data FROM {schema}.audit_events WHERE type = 'session.revoked'`,
-    );
-    expect(replaced?.data).toEqual({ reason: "replaced" });
+    expect(await sessionStates(s)).toEqual([true, false]);
   });
 });
 
@@ -592,7 +578,7 @@ describe.skipIf(!databaseUrl)("step-up", () => {
       `SELECT authenticated_at > now() - interval '1 minute' AS "fresh" FROM {schema}.sessions`,
     );
     expect(session?.fresh).toBe(true);
-    expect((await auditTypes(s)).at(-1)).toBe("session.reauthenticated");
+    expect(await sessionStates(s)).toEqual([false]);
   });
 
   it("rejects a provider that did not re-authenticate", async () => {
@@ -683,11 +669,7 @@ describe.skipIf(!databaseUrl)("back-channel logout", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect((await s.call("/auth/session")).status).toBe(401);
-    const [event] = await rows<{ actor: string; data: unknown }>(
-      s,
-      `SELECT actor_type AS "actor", data FROM {schema}.audit_events WHERE type = 'session.revoked'`,
-    );
-    expect(event).toEqual({ actor: "idp", data: { reason: "idp_logout" } });
+    expect(await sessionStates(s)).toEqual([true]);
   });
 
   it("ends every session of the subject named by sub", async () => {
@@ -811,11 +793,7 @@ describe.skipIf(!databaseUrl)("back-channel logout atomicity", () => {
     expect(retried.status).toBe(200);
     expect(await jtiCount()).toBe(1);
     expect((await s.call("/auth/session")).status).toBe(401);
-    const revoked = await rows<{ reason: string }>(
-      s,
-      `SELECT data->>'reason' AS "reason" FROM {schema}.audit_events WHERE type = 'session.revoked'`,
-    );
-    expect(revoked).toEqual([{ reason: "idp_logout" }]);
+    expect(await sessionStates(s)).toEqual([true]);
 
     // A true replay after success is still refused.
     const replay = await s.mock.sendBackchannelLogout(token);

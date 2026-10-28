@@ -17,7 +17,7 @@ Never import app code or add app-specific behaviour here. App-specific data ente
 ## Invariants
 
 - People are keyed by `(iss, sub)`. Email is an attribute; never match or link on it.
-- Never trust `returnTo`, `state`, `iss` or a logout token without the checks in `oidc/`. A refused sign-in returns an outcome, not an exception, so its audit event commits.
+- Never trust `returnTo`, `state`, `iss` or a logout token without the checks in `oidc/`. A refused sign-in returns an outcome, not an exception.
 - Store only HMAC-SHA256 hashes of tokens and secrets, under a key from `deriveKey`. Never log a token, a secret or a configuration object's secret fields.
 - `KEY_LABELS`, `KEY_DERIVATION_SALT`, the API key format and `migrationChecksum` are stored-data formats. Never change or reuse one; add new labels and versions instead. The known-answer tests pin them.
 - Never edit a migration that has shipped. Add a new numbered file. Every SQL function pins `search_path` and reaches tables through `TG_TABLE_SCHEMA`, because the schema name is configurable.

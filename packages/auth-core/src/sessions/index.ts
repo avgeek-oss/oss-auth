@@ -1,9 +1,7 @@
 import { createActor, type Actor, type ActorUser } from "../actor.js";
-import type { AuditActor, SessionRevokeReason } from "../audit.js";
 import type { AuthConfig } from "../config.js";
 import { quoteIdent } from "../identifiers.js";
 import { deriveKey } from "../keys.js";
-import { insertAuditEvent } from "../postgres/audit.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
 import type { Role } from "../roles.js";
 import { generateToken, hashToken, isWellFormedToken } from "../tokens.js";
@@ -69,17 +67,9 @@ export interface Sessions<Ext extends object> {
   /** The hash stored for `token`, or `null` when it is malformed. */
   hash(token: string | undefined): string | null;
   /** Revokes one session. Returns whether a live session was revoked. */
-  revoke(
-    idHash: string,
-    reason: SessionRevokeReason,
-    actor?: AuditActor,
-  ): Promise<boolean>;
+  revoke(idHash: string): Promise<boolean>;
   /** Revokes every live session of a user and returns how many. */
-  revokeAll(
-    userId: string,
-    reason: SessionRevokeReason,
-    actor?: AuditActor,
-  ): Promise<number>;
+  revokeAll(userId: string): Promise<number>;
   /** A user's live sessions, newest first. */
   list(userId: string): Promise<SessionRecord[]>;
   /**
@@ -92,9 +82,8 @@ export interface Sessions<Ext extends object> {
   ): Promise<boolean>;
   /**
    * Revokes the sessions a back-channel logout names: by provider `sid`, by
-   * `sub`, or by both (sessions matching both), with their audit events.
-   * Returns how many. Pass a transaction as `db` to make it part of a larger
-   * change; otherwise it runs in its own.
+   * `sub`, or by both (sessions matching both). Returns how many. Pass a
+   * transaction as `db` to make it part of a larger change.
    */
   revokeForProvider(
     input: {
@@ -120,7 +109,6 @@ export function createSessions<Ext extends object = Record<never, never>>(
   const schema = quoteIdent(config.schema);
   const sessions = `${schema}.sessions`;
   const users = `${schema}.users`;
-  const audit = { schema: config.schema };
   const maxAge = config.session.maxAgeSeconds;
   const idle = config.session.idleTimeoutSeconds;
   const now = () => options.now?.() ?? null;
@@ -134,26 +122,13 @@ export function createSessions<Ext extends object = Record<never, never>>(
     db: SqlQueryable,
     where: string,
     params: unknown[],
-    reason: SessionRevokeReason,
-    actor: AuditActor,
   ): Promise<number> {
-    const rows = await db.query<{ idHash: string; userId: string }>(
+    const rows = await db.query(
       `UPDATE ${sessions} s SET revoked_at = ${T}
        WHERE s.revoked_at IS NULL AND ${where}
-       RETURNING s.id_hash AS "idHash", s.user_id AS "userId"`,
+       RETURNING s.id_hash`,
       [now(), ...params],
     );
-    for (const row of rows)
-      await insertAuditEvent(
-        db,
-        {
-          type: "session.revoked",
-          actor,
-          subjectUserId: row.userId,
-          data: { reason },
-        },
-        audit,
-      );
     return rows.length;
   }
 
@@ -184,20 +159,6 @@ export function createSessions<Ext extends object = Record<never, never>>(
       );
       if (session === undefined)
         throw new Error("INSERT … RETURNING returned no row.");
-      await insertAuditEvent(
-        db,
-        {
-          type: "session.created",
-          actor: {
-            type: "user",
-            userId: input.userId,
-            credential: { kind: "session", id: idHash },
-          },
-          subjectUserId: input.userId,
-          data: { amr: session.amr },
-        },
-        audit,
-      );
       return { token, session };
     },
 
@@ -246,29 +207,12 @@ export function createSessions<Ext extends object = Record<never, never>>(
       };
     },
 
-    async revoke(idHash, reason, actor) {
-      return sql.transaction(
-        async (tx) =>
-          (await revokeWhere(
-            tx,
-            "s.id_hash = $2",
-            [idHash],
-            reason,
-            actor ?? { type: "system" },
-          )) > 0,
-      );
+    async revoke(idHash) {
+      return (await revokeWhere(sql, "s.id_hash = $2", [idHash])) > 0;
     },
 
-    async revokeAll(userId, reason, actor) {
-      return sql.transaction((tx) =>
-        revokeWhere(
-          tx,
-          "s.user_id = $2",
-          [userId],
-          reason,
-          actor ?? { type: "system" },
-        ),
-      );
+    async revokeAll(userId) {
+      return revokeWhere(sql, "s.user_id = $2", [userId]);
     },
 
     async list(userId) {
@@ -282,48 +226,26 @@ export function createSessions<Ext extends object = Record<never, never>>(
     },
 
     async reauthenticate(idHash, input) {
-      return sql.transaction(async (tx) => {
-        const rows = await tx.query<{ userId: string; amr: string[] }>(
-          `UPDATE ${sessions}
-           SET authenticated_at = GREATEST(authenticated_at, LEAST($3::timestamptz, ${T})),
-               amr = ARRAY(SELECT jsonb_array_elements_text($4::text::jsonb))
-           WHERE id_hash = $2 AND revoked_at IS NULL
-             AND expires_at > ${T} AND idle_expires_at > ${T}
-           RETURNING user_id AS "userId", amr`,
-          [now(), idHash, input.authenticatedAt, JSON.stringify(input.amr)],
-        );
-        const row = rows[0];
-        if (row === undefined) return false;
-        await insertAuditEvent(
-          tx,
-          {
-            type: "session.reauthenticated",
-            actor: {
-              type: "user",
-              userId: row.userId,
-              credential: { kind: "session", id: idHash },
-            },
-            subjectUserId: row.userId,
-            data: { amr: row.amr },
-          },
-          audit,
-        );
-        return true;
-      });
+      const rows = await sql.query(
+        `UPDATE ${sessions}
+         SET authenticated_at = GREATEST(authenticated_at, LEAST($3::timestamptz, ${T})),
+             amr = ARRAY(SELECT jsonb_array_elements_text($4::text::jsonb))
+         WHERE id_hash = $2 AND revoked_at IS NULL
+           AND expires_at > ${T} AND idle_expires_at > ${T}
+         RETURNING id_hash`,
+        [now(), idHash, input.authenticatedAt, JSON.stringify(input.amr)],
+      );
+      return rows.length === 1;
     },
 
     async revokeForProvider({ iss, sub, sid }, db) {
       if (sub === null && sid === null) return 0;
-      const run = (tx: SqlQueryable) =>
-        revokeWhere(
-          tx,
-          `s.user_id IN (SELECT id FROM ${users} WHERE iss = $2 AND ($3::text IS NULL OR sub = $3))
-           AND ($4::text IS NULL OR s.provider_sid = $4)`,
-          [iss, sub, sid],
-          "idp_logout",
-          { type: "idp", issuer: iss },
-        );
-      return db ? run(db) : sql.transaction(run);
+      return revokeWhere(
+        db ?? sql,
+        `s.user_id IN (SELECT id FROM ${users} WHERE iss = $2 AND ($3::text IS NULL OR sub = $3))
+         AND ($4::text IS NULL OR s.provider_sid = $4)`,
+        [iss, sub, sid],
+      );
     },
   };
 }

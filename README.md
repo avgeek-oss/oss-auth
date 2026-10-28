@@ -4,7 +4,7 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 
 | Package                                       | Runs in | What it does                                                                                      |
 | --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles, actors and audit events.        |
+| [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles and actors.                      |
 | `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
 | `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
 | `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |

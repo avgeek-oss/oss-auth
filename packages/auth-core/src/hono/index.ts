@@ -1,7 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createRemoteJWKSet } from "jose";
-import { auditActor } from "../audit.js";
 import type { Actor, ActorUser } from "../actor.js";
 import type { AuthConfig } from "../config.js";
 import { AuthRequestError, type AuthRequestErrorCode } from "../errors.js";
@@ -397,12 +396,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
           { reason: outcome.reason },
         );
       // A new token every sign-in; the browser's previous session ends.
-      if (previous !== null)
-        await sessions.revoke(previous, "replaced", {
-          type: "user",
-          userId: outcome.user.id,
-          credential: { kind: "session", id: previous },
-        });
+      if (previous !== null) await sessions.revoke(previous);
       setSessionCookie(c, outcome.token ?? "");
       return c.redirect(`${web}${transaction.returnTo}`, 303);
     } catch (error) {
@@ -416,10 +410,8 @@ export function createAuth<Ext extends object = Record<never, never>>(
   });
 
   routes.post("/sign-out", trustedOrigin, actor, async (c) => {
-    const current = c.get("actor");
     const session = c.get("session");
-    if (current && session)
-      await sessions.revoke(session.idHash, "sign_out", auditActor(current));
+    if (session) await sessions.revoke(session.idHash);
     deleteCookie(c, sessionCookie, cookieOptions);
     let endSessionUrl: string | null = null;
     try {

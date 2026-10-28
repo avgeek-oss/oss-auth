@@ -1,13 +1,14 @@
-import type { AuditActor, ChangeSource, SignInDeniedReason } from "../audit.js";
 import type { AuthConfig } from "../config.js";
 import { quoteIdent } from "../identifiers.js";
-import { insertAuditEvent } from "../postgres/audit.js";
 import type { SqlQueryable } from "../postgres/sql.js";
 import { resolveRole, type Role } from "../roles.js";
 
 /** Where a user's role came from. Stored in `users.role_source`. */
 export type RoleSource =
   "none" | "oidc" | "bootstrap" | "scim" | "admin" | "operator";
+
+/** Why an OIDC sign-in was refused after the provider authenticated it. */
+export type SignInDeniedReason = "no_role" | "user_inactive" | "user_deleted";
 
 /** A row of the `users` table, as auth-core reads it. */
 export interface UserRecord {
@@ -60,8 +61,7 @@ function bootstrapMatches(
 }
 
 /**
- * Maps validated ID token claims to a user, inside the caller's transaction,
- * and records what changed in the audit log.
+ * Maps validated ID token claims to a user, inside the caller's transaction.
  *
  * - The user is found by `(iss, sub)` and created on first sign-in. Email
  *   and display name are refreshed from the claims every time.
@@ -72,8 +72,7 @@ function bootstrapMatches(
  * - The bootstrap admin (`<APP>_BOOTSTRAP_ADMIN`) becomes `admin` while the
  *   role claim is missing and SCIM has not set their role.
  *
- * A refusal is returned, not thrown, so the caller can commit its audit
- * event.
+ * A refusal is returned, not thrown, so the caller decides how to answer.
  */
 export async function signInUser(
   tx: SqlQueryable,
@@ -81,8 +80,6 @@ export async function signInUser(
   claims: Readonly<Record<string, unknown>> & { iss: string; sub: string },
 ): Promise<SignInOutcome> {
   const users = `${quoteIdent(config.schema)}.users`;
-  const schema = { schema: config.schema };
-  const idp: AuditActor = { type: "idp", issuer: claims.iss };
   const email = stringClaim(claims.email, 320);
   const displayName =
     stringClaim(claims.name, 256) ??
@@ -90,22 +87,10 @@ export async function signInUser(
   const resolved = resolveRole(claims, config.oidc.roleMap);
   const bootstrap = bootstrapMatches(config, claims);
 
-  const deny = async (
+  const deny = (
     reason: SignInDeniedReason,
     userId: string | null,
-  ): Promise<SignInOutcome> => {
-    await insertAuditEvent(
-      tx,
-      {
-        type: "sign_in.denied",
-        actor: idp,
-        subjectUserId: userId,
-        data: { reason },
-      },
-      schema,
-    );
-    return { kind: "denied", reason, userId };
-  };
+  ): SignInOutcome => ({ kind: "denied", reason, userId });
 
   const select = async () =>
     (
@@ -134,19 +119,8 @@ export async function signInUser(
        RETURNING ${COLUMNS}`,
       [claims.iss, claims.sub, email, displayName, role, source],
     );
-    if (created !== undefined) {
-      await insertAuditEvent(
-        tx,
-        {
-          type: "user.created",
-          actor: idp,
-          subjectUserId: created.id,
-          data: { source: source === "bootstrap" ? "bootstrap" : "oidc" },
-        },
-        schema,
-      );
+    if (created !== undefined)
       return { kind: "allowed", user: created, created: true };
-    }
     // Another sign-in created the user first; continue as a returning user.
     existing = await select();
     if (existing === undefined)
@@ -167,11 +141,9 @@ export async function signInUser(
     source = "bootstrap";
   }
 
-  const fields: string[] = [];
-  if (email !== existing.email) fields.push("email");
-  if (displayName !== existing.displayName) fields.push("display_name");
   if (
-    fields.length === 0 &&
+    email === existing.email &&
+    displayName === existing.displayName &&
     role === existing.role &&
     source === existing.roleSource
   )
@@ -184,29 +156,5 @@ export async function signInUser(
   );
   if (updated === undefined)
     throw new Error("The user vanished during sign-in.");
-  const changeSource: ChangeSource =
-    source === "bootstrap" ? "bootstrap" : "oidc";
-  if (fields.length > 0)
-    await insertAuditEvent(
-      tx,
-      {
-        type: "user.updated",
-        actor: idp,
-        subjectUserId: existing.id,
-        data: { source: "oidc", fields },
-      },
-      schema,
-    );
-  if (role !== existing.role)
-    await insertAuditEvent(
-      tx,
-      {
-        type: "user.role_changed",
-        actor: idp,
-        subjectUserId: existing.id,
-        data: { source: changeSource, from: existing.role, to: role },
-      },
-      schema,
-    );
   return { kind: "allowed", user: updated, created: false };
 }

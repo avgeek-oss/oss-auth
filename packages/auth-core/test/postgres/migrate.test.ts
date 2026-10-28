@@ -154,7 +154,6 @@ describe.skipIf(!databaseUrl).each(adapters)(
           existing: [],
         });
         expect((await tables("auth")).map((t) => t.name)).toEqual([
-          "audit_events",
           "logout_jtis",
           "schema_migrations",
           "sessions",
@@ -176,7 +175,6 @@ describe.skipIf(!databaseUrl).each(adapters)(
         applied: BUNDLED,
       });
       expect((await tables(schema)).map((t) => t.name)).toEqual([
-        "audit_events",
         "logout_jtis",
         "schema_migrations",
         "sessions",
@@ -185,7 +183,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
       const [elsewhere] = await sql.query<{ count: number }>(
         `SELECT count(*)::int AS "count" FROM information_schema.tables
          WHERE table_schema = 'public'
-           AND table_name IN ('users', 'sessions', 'audit_events', 'schema_migrations')`,
+           AND table_name IN ('users', 'sessions', 'logout_jtis', 'schema_migrations')`,
       );
       expect(elsewhere?.count).toBe(0);
     });
@@ -203,7 +201,6 @@ describe.skipIf(!databaseUrl).each(adapters)(
         [schema],
       );
       expect(functions.map((f) => f.name)).toEqual([
-        "audit_events_before_update",
         "sessions_before_insert",
         "sessions_before_update",
         "users_before_update",

@@ -26,6 +26,7 @@ export {
 export {
   signInUser,
   type RoleSource,
+  type SignInDeniedReason,
   type SignInOutcome,
   type UserRecord,
 } from "./users.js";

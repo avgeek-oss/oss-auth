@@ -21,17 +21,6 @@ export {
 } from "./api-keys.js";
 export { APP_ID_PATTERN, assertAppId } from "./app-id.js";
 export {
-  auditActor,
-  AUDIT_EVENT_TYPES,
-  type AuditActor,
-  type AuditContext,
-  type AuditEvent,
-  type AuditEventType,
-  type ChangeSource,
-  type SessionRevokeReason,
-  type SignInDeniedReason,
-} from "./audit.js";
-export {
   authEnvNames,
   DEFAULT_ROLE_MAP_VALUES,
   loadAuthConfig,

@@ -1,15 +1,11 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
-  auditActor,
-  AUDIT_EVENT_TYPES,
   createActor,
   effectiveRole,
   ROLES,
   roleRank,
   type Actor,
   type ActorUser,
-  type AuditEvent,
-  type AuditEventType,
 } from "../src/index.js";
 
 const user = (role: ActorUser["role"]): ActorUser => ({
@@ -69,56 +65,5 @@ describe("createActor", () => {
       credential: { kind: "oauth", id: "grant-1", ceiling: "viewer" },
     });
     expect(actor.role).toBe("viewer");
-  });
-});
-
-describe("audit events", () => {
-  it("lists every event type exactly once", () => {
-    expectTypeOf<
-      (typeof AUDIT_EVENT_TYPES)[number]
-    >().toEqualTypeOf<AuditEventType>();
-    expect(new Set(AUDIT_EVENT_TYPES).size).toBe(AUDIT_EVENT_TYPES.length);
-    for (const type of AUDIT_EVENT_TYPES)
-      expect(type).toMatch(/^[a-z][a-z_]*(\.[a-z][a-z_]*)+$/);
-  });
-
-  it("describes a request's actor without its secret", () => {
-    const actor = createActor({
-      user: user("member"),
-      credential: { kind: "api_key", id: "key-1", ceiling: "viewer" },
-    });
-    expect(auditActor(actor)).toEqual({
-      type: "user",
-      userId: actor.user.id,
-      credential: { kind: "api_key", id: "key-1" },
-    });
-  });
-
-  it("types each event's data by its type", () => {
-    const event: AuditEvent = {
-      type: "user.role_changed",
-      actor: {
-        type: "idp",
-        issuer: "https://auth.example.com/application/o/posted/",
-      },
-      subjectUserId: user("member").id,
-      data: { source: "scim", from: "member", to: "admin" },
-    };
-    expect(event.data).toEqual({ source: "scim", from: "member", to: "admin" });
-    const denied: AuditEvent = {
-      type: "sign_in.denied",
-      actor: { type: "system" },
-      subjectUserId: null,
-      data: { reason: "no_role" },
-    };
-    expect(denied.subjectUserId).toBeNull();
-    // @ts-expect-error: a role change needs from and to.
-    const broken: AuditEvent = {
-      type: "user.role_changed",
-      actor: { type: "system" },
-      subjectUserId: "u",
-      data: { source: "scim" },
-    };
-    expect(broken.type).toBe("user.role_changed");
   });
 });

@@ -192,21 +192,17 @@ describe.skipIf(!databaseUrl).each(adapters)(
         b.session.idHash,
         a.session.idHash,
       ]);
-      expect(await sessions.revoke(a.session.idHash, "sign_out")).toBe(true);
-      expect(await sessions.revoke(a.session.idHash, "sign_out")).toBe(false);
+      expect(await sessions.revoke(a.session.idHash)).toBe(true);
+      expect(await sessions.revoke(a.session.idHash)).toBe(false);
       expect(await sessions.lookup(a.token)).toBeNull();
-      expect(await sessions.revokeAll(userId, "sign_out_everywhere")).toBe(2);
+      expect(await sessions.revokeAll(userId)).toBe(2);
       expect(await sessions.list(userId)).toEqual([]);
-      const reasons = await sql.query<{ reason: string }>(
-        `SELECT data->>'reason' AS "reason" FROM ${t("audit_events")}
-       WHERE type = 'session.revoked' AND subject_user_id = $1 ORDER BY id`,
+      const revoked = await sql.query<{ count: number }>(
+        `SELECT count(*)::int AS "count" FROM ${t("sessions")}
+         WHERE user_id = $1 AND revoked_at IS NOT NULL`,
         [userId],
       );
-      expect(reasons.map((r) => r.reason)).toEqual([
-        "sign_out",
-        "sign_out_everywhere",
-        "sign_out_everywhere",
-      ]);
+      expect(revoked[0]?.count).toBe(3);
     });
 
     it("records a step-up, moving authentication forward only", async () => {
@@ -228,7 +224,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect(
         (await sessions.lookup(token))?.session.authenticatedAt.getTime(),
       ).toBe(now.getTime());
-      await sessions.revoke(session.idHash, "sign_out");
+      await sessions.revoke(session.idHash);
       expect(
         await sessions.reauthenticate(session.idHash, {
           authenticatedAt: now,

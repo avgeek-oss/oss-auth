@@ -2,14 +2,14 @@
 
 The server half of Avgeek OSS auth: sign-in through the organisation's OpenID provider, sessions, roles and the Postgres schema. See the [repository README](../../README.md) for the design and [ARCHITECTURE.md](../../ARCHITECTURE.md) for the contract apps implement.
 
-| Import                           | What it holds                                                                                                                                            |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@avgeek-oss/auth-core`          | `loadAuthConfig`, `deriveKey` and `createKeyring`, tokens, the API key format, roles and `resolveRole`, `Actor`, `AuditEvent`, errors with stable codes. |
-| `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`, `insertAuditEvent`.                                           |
-| `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                                  |
-| `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                                    |
-| `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                                          |
-| `@avgeek-oss/auth-core/testing`  | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                                           |
+| Import                           | What it holds                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@avgeek-oss/auth-core`          | `loadAuthConfig`, `deriveKey` and `createKeyring`, tokens, the API key format, roles and `resolveRole`, `Actor`, errors with stable codes. |
+| `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
+| `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
+| `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
+| `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
+| `@avgeek-oss/auth-core/testing`  | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                             |
 
 Runtime dependencies: `zod`, `openid-client` and `jose` (which `openid-client` already uses). Optional peers: `hono` for `/hono`, `pg` or `postgres` for the adapter you use, and `oidc-provider` for `/testing`.
 
