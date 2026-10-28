@@ -6,7 +6,7 @@ import {
   InvalidApiKeyError,
 } from "../errors.js";
 import { quoteIdent } from "../identifiers.js";
-import { deriveKey } from "../keys.js";
+import { deriveKeys } from "../keys.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
 import { isRole, roleAtLeast, type Role } from "../roles.js";
 import { constantTimeEqual, hashToken } from "../tokens.js";
@@ -186,7 +186,10 @@ export function createApiKeys<Ext extends object = Record<never, never>>(
       },
     ]);
   const keyPrefix: string = prefix;
-  const hmacKey = deriveKey(config.secret, config.app, "api-key");
+  // The current secret's key first; keys issued before a rotation match a
+  // later one and are re-hashed under the first when next used.
+  const keyring = deriveKeys(config, "api-key");
+  const hmacKey = keyring[0] ?? raise();
   const schema = quoteIdent(config.schema);
   const keys = `${schema}.api_keys`;
   const users = `${schema}.users`;
@@ -402,11 +405,23 @@ export function createApiKeys<Ext extends object = Record<never, never>>(
          WHERE k.id = $2`,
         [now(), id, scimRoles],
       );
-      const matches = constantTimeEqual(
-        hashToken(hmacKey, presented),
-        row?.secretHash ?? ABSENT_HASH,
+      // Every key is tried, so the time taken does not say which matched.
+      const stored = row?.secretHash ?? ABSENT_HASH;
+      const matched = keyring.map((key) =>
+        constantTimeEqual(hashToken(key, presented), stored),
       );
-      if (!row || !matches || !row.usable || row.role === null) return null;
+      if (!row || !matched.includes(true) || !row.usable || row.role === null)
+        return null;
+      if (!matched[0])
+        await sql.transaction(async (tx) => {
+          await tx.query(`SELECT set_config('auth_core.rehash', $1, true)`, [
+            row.secretHash,
+          ]);
+          await tx.query(
+            `UPDATE ${keys} SET secret_hash = $3 WHERE id = $1 AND secret_hash = $2`,
+            [id, row.secretHash, hashToken(hmacKey, presented)],
+          );
+        });
       const [used] = await sql.query<{ lastUsedAt: Date }>(
         `UPDATE ${keys} SET last_used_at = ${T}
          WHERE id = $2 AND (last_used_at IS NULL OR last_used_at < ${T} - interval '60 seconds')
@@ -451,4 +466,8 @@ export function createApiKeys<Ext extends object = Record<never, never>>(
       };
     },
   };
+}
+
+function raise(): never {
+  throw new Error("deriveKeys returned no key.");
 }

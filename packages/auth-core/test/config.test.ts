@@ -40,6 +40,8 @@ describe("loadAuthConfig", () => {
     expect({ ...config }).toEqual({
       app: "posted",
       secret: SECRET,
+      previousSecrets: [],
+      selfCheck: true,
       oidc: {
         issuer: "https://auth.example.com/application/o/posted/",
         clientId: "posted",

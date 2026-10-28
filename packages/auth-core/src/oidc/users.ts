@@ -7,7 +7,7 @@ import { resolveRole, type Role } from "../roles.js";
  * Where a user's role was last set, including to `null`. Stored in
  * `users.role_source`; `null` until something sets the role.
  */
-export type RoleSource = "oidc" | "scim" | "admin" | "operator";
+export type RoleSource = "oidc" | "scim" | "admin";
 
 /** Why an OIDC sign-in was refused after the provider authenticated it. */
 export type SignInDeniedReason =

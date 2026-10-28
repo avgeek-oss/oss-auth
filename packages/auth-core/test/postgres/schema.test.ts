@@ -644,12 +644,13 @@ describe.skipIf(!databaseUrl).each(adapters)(
           [id],
         );
         expect(row?.source).toBeNull();
-        for (const source of ["oidc", "scim", "admin", "operator", null])
+        for (const source of ["oidc", "scim", "admin", null])
           await sql.query(
             `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
             [id, source],
           );
-        for (const source of ["claims", "none"])
+        // 0008 drops 'operator': there is no operator tool.
+        for (const source of ["claims", "none", "operator"])
           await fails(
             `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
             [id, source],

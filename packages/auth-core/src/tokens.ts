@@ -51,6 +51,18 @@ export function hashToken(key: Uint8Array, token: string): string {
 }
 
 /**
+ * `token`'s hash under each of `keys`, in order: the current key's first,
+ * then each previous secret's (see `deriveKeys`). For lookups that must
+ * also find values stored before a secret rotation.
+ */
+export function hashTokens(
+  keys: readonly Uint8Array[],
+  token: string,
+): string[] {
+  return keys.map((key) => hashToken(key, token));
+}
+
+/**
  * Compares two values without leaking where they differ. Both sides are
  * hashed with SHA-256 and the digests compared with `timingSafeEqual`, so the
  * comparison time reveals neither the position of a mismatch nor the length

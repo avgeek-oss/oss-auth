@@ -5,7 +5,12 @@ import type { AuthConfig } from "../config.js";
 import { AuthRequestError } from "../errors.js";
 import type { Auth, AuthEnv, AuthErrorBody } from "../hono/index.js";
 import { quoteIdent } from "../identifiers.js";
-import { deriveKey } from "../keys.js";
+import { deriveKeys } from "../keys.js";
+import {
+  sweepOAuthCodes,
+  sweepOAuthRequests,
+  sweepOAuthTokens,
+} from "../jobs/sweeps.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
 import { isLimitError, limitResponse } from "../rate-limits/index.js";
 import { isLoopbackRedirect, redirectMatches } from "../redirect-uris.js";
@@ -17,7 +22,12 @@ import {
   ROLES,
   type Role,
 } from "../roles.js";
-import { constantTimeEqual, generateToken, hashToken } from "../tokens.js";
+import {
+  constantTimeEqual,
+  generateToken,
+  hashToken,
+  hashTokens,
+} from "../tokens.js";
 import {
   ClientError,
   createClientStore,
@@ -164,9 +174,9 @@ export interface McpAuth<Ext extends object> {
     options?: { readonly userId?: string },
   ): Promise<boolean>;
   /**
-   * Deletes consent requests, codes and tokens that expired more than a day
-   * ago, and returns how many of each. Run it from the app's scheduler.
-   * Grants and clients are kept.
+   * Deletes consent requests, codes and tokens past their lifetime (the
+   * sweeps of `@avgeek-oss/auth-core/jobs`), and returns how many of each.
+   * `runAuthJobs` runs these and every other sweep; prefer it.
    */
   purgeExpired(): Promise<{
     readonly requests: number;
@@ -270,11 +280,25 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
     codes: `${schema}.oauth_codes`,
     tokens: `${schema}.oauth_tokens`,
   };
+  // New values are hashed under the current secret's key (`keys`); lookups
+  // also try the keys of <APP>_PREVIOUS_SECRETS (`rings`). None of these
+  // live long enough to need re-hashing: refresh tokens rotate on use.
+  const rings = {
+    request: deriveKeys(config, "oauth-request"),
+    code: deriveKeys(config, "oauth-code"),
+    access: deriveKeys(config, "oauth-access-token"),
+    refresh: deriveKeys(config, "oauth-refresh-token"),
+  };
+  const first = (ring: readonly Buffer[]) => {
+    const key = ring[0];
+    if (!key) throw new Error("deriveKeys returned no key.");
+    return key;
+  };
   const keys = {
-    request: deriveKey(config.secret, config.app, "oauth-request"),
-    code: deriveKey(config.secret, config.app, "oauth-code"),
-    access: deriveKey(config.secret, config.app, "oauth-access-token"),
-    refresh: deriveKey(config.secret, config.app, "oauth-refresh-token"),
+    request: first(rings.request),
+    code: first(rings.code),
+    access: first(rings.access),
+    refresh: first(rings.refresh),
   };
   const scimRoles = config.roleSource === "scim";
   const clock = () => options.now?.() ?? null;
@@ -724,16 +748,16 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
     id: string,
     userId: string,
   ): Promise<PendingRequest & { idHash: string }> {
-    const idHash = hashToken(keys.request, id);
-    const [row] = await db.query<PendingRequest>(
-      `SELECT r.client_id AS "clientId", c.client_name AS "clientName",
+    const [row] = await db.query<PendingRequest & { idHash: string }>(
+      `SELECT r.id_hash AS "idHash", r.client_id AS "clientId", c.client_name AS "clientName",
          c.logo_uri AS "logoUri", c.kind, r.redirect_uri AS "redirectUri",
          r.resource, r.scope, r.state, r.code_challenge AS "codeChallenge",
          r.user_id AS "userId", r.expires_at AS "expiresAt"
        FROM ${t.requests} r JOIN ${t.clients} c ON c.client_id = r.client_id
-       WHERE r.id_hash = $2 AND r.decided_at IS NULL AND r.expires_at > ${T}
+       WHERE r.id_hash = ANY($2::text[]) AND r.decided_at IS NULL
+         AND r.expires_at > ${T}
        FOR UPDATE OF r`,
-      [clock(), idHash],
+      [clock(), hashTokens(rings.request, id)],
     );
     if (!row || (row.userId !== null && row.userId !== userId))
       throw new AuthRequestError(
@@ -743,9 +767,9 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
     if (row.userId === null)
       await db.query(
         `UPDATE ${t.requests} SET user_id = $2 WHERE id_hash = $1`,
-        [idHash, userId],
+        [row.idHash, userId],
       );
-    return { ...row, userId, idHash };
+    return { ...row, userId };
   }
 
   const roleUpTo = (role: Role) => ROLES.filter((r) => roleAtLeast(role, r));
@@ -970,12 +994,13 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
           codeChallenge: string;
           consumed: boolean;
           live: boolean;
+          codeHash: string;
         }>(
-          `SELECT grant_id AS "grantId", client_id AS "clientId",
+          `SELECT code_hash AS "codeHash", grant_id AS "grantId", client_id AS "clientId",
              redirect_uri AS "redirectUri", resource, code_challenge AS "codeChallenge",
              consumed_at IS NOT NULL AS "consumed", expires_at > ${T} AS "live"
-           FROM ${t.codes} WHERE code_hash = $2 FOR UPDATE`,
-          [clock(), hashToken(keys.code, code)],
+           FROM ${t.codes} WHERE code_hash = ANY($2::text[]) FOR UPDATE`,
+          [clock(), hashTokens(rings.code, code)],
         );
         const invalid = new OAuthError(
           "invalid_grant",
@@ -1003,7 +1028,7 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
         }
         await tx.query(
           `UPDATE ${t.codes} SET consumed_at = ${T} WHERE code_hash = $2`,
-          [clock(), hashToken(keys.code, code)],
+          [clock(), row.codeHash],
         );
         if (resourceParam !== null && resourceParam !== row.resource)
           return new OAuthError(
@@ -1043,9 +1068,9 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
              t.rotated_at IS NOT NULL AS "rotated", t.revoked_at IS NOT NULL AS "revoked",
              t.expires_at > ${T} AND t.family_expires_at > ${T} AS "live"
            FROM ${t.tokens} t JOIN ${t.grants} g ON g.id = t.grant_id
-           WHERE t.token_hash = $2 AND t.kind = 'refresh'
+           WHERE t.token_hash = ANY($2::text[]) AND t.kind = 'refresh'
            FOR UPDATE OF t`,
-          [clock(), hashToken(keys.refresh, presented)],
+          [clock(), hashTokens(rings.refresh, presented)],
         );
         const invalid = new OAuthError(
           "invalid_grant",
@@ -1099,11 +1124,13 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
         `UPDATE ${t.tokens} SET revoked_at = ${T}
        WHERE revoked_at IS NULL AND family_id IN (
          SELECT t.family_id FROM ${t.tokens} t JOIN ${t.grants} g ON g.id = t.grant_id
-         WHERE t.token_hash IN ($2, $3) AND g.client_id = $4)`,
+         WHERE t.token_hash = ANY($2::text[]) AND g.client_id = $3)`,
         [
           clock(),
-          hashToken(keys.access, token),
-          hashToken(keys.refresh, token),
+          [
+            ...hashTokens(rings.access, token),
+            ...hashTokens(rings.refresh, token),
+          ],
           client.clientId,
         ],
       );
@@ -1285,7 +1312,7 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
       };
       const match = /^bearer +([^\s]+) *$/i.exec(header);
       if (!match?.[1]) return invalid("A bearer token is required.");
-      const tokenHash = hashToken(keys.access, match[1]);
+      const tokenHashes = hashTokens(rings.access, match[1]);
       const [row] = await sql.query<{
         grantId: string;
         ceiling: Role;
@@ -1302,10 +1329,10 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
          FROM ${t.tokens} t
          JOIN ${t.grants} g ON g.id = t.grant_id
          JOIN ${t.users} u ON u.id = g.user_id
-         WHERE t.token_hash = $3 AND t.kind = 'access' AND t.resource = $4
+         WHERE t.token_hash = ANY($3::text[]) AND t.kind = 'access' AND t.resource = $4
            AND t.revoked_at IS NULL AND t.expires_at > ${T}
            AND g.revoked_at IS NULL AND ${usableOwner("$2")}`,
-        [clock(), scimRoles, tokenHash, resource.uri],
+        [clock(), scimRoles, tokenHashes, resource.uri],
       );
       if (!row)
         return invalid(
@@ -1347,17 +1374,15 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
   };
 
   async function purgeExpired() {
-    const purge = async (table: string) =>
-      (
-        await sql.query(
-          `DELETE FROM ${table} WHERE expires_at < ${T} - interval '1 day' RETURNING 1`,
-          [clock()],
-        )
-      ).length;
+    const sweep = {
+      sql,
+      config,
+      ...(options.now ? { now: options.now } : {}),
+    };
     return {
-      requests: await purge(t.requests),
-      codes: await purge(t.codes),
-      tokens: await purge(t.tokens),
+      requests: (await sweepOAuthRequests(sweep)).deleted,
+      codes: (await sweepOAuthCodes(sweep)).deleted,
+      tokens: (await sweepOAuthTokens(sweep)).deleted,
     };
   }
 

@@ -39,6 +39,8 @@ const allowAll: RateLimiter = {
 function auth(api: string, web = "https://posted.example.com") {
   const config = loadAuthConfig("posted", {
     POSTED_SECRET: "s".repeat(32),
+    // The self-check has its own tests; here it would only add noise.
+    POSTED_SELF_CHECK: "false",
     POSTED_OIDC_ISSUER: ISSUER,
     POSTED_OIDC_CLIENT_ID: "posted",
     POSTED_OIDC_CLIENT_SECRET: "x",
@@ -153,6 +155,8 @@ describe("cookies", () => {
   it("reports an unreachable provider as oidc_unavailable", async () => {
     const config = loadAuthConfig("posted", {
       POSTED_SECRET: "s".repeat(32),
+      // The self-check has its own tests; here it would only add noise.
+      POSTED_SELF_CHECK: "false",
       POSTED_OIDC_ISSUER: ISSUER,
       POSTED_OIDC_CLIENT_ID: "posted",
       POSTED_OIDC_CLIENT_SECRET: "x",

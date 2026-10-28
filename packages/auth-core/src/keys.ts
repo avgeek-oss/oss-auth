@@ -28,8 +28,6 @@ export const KEY_LABELS = [
   "oauth-refresh-token",
   /** Encrypts stored idempotent responses. */
   "idempotency",
-  /** Hashes one-time break-glass sign-in tokens. */
-  "break-glass",
   /** Hashes the ids of pending OAuth consent requests at rest. */
   "oauth-request",
   /** Hashes rate limit keys, so buckets never hold raw IPs or ids. */
@@ -78,6 +76,26 @@ export function deriveKey(
       Buffer.from(`${app}:${label}:v1`, "utf8"),
       DERIVED_KEY_BYTES,
     ),
+  );
+}
+
+/**
+ * The keys for `label` during a secret rotation: the one from
+ * `config.secret` first, then one per `config.previousSecrets`, in order.
+ * New values are always made with the first; values are checked against
+ * each in turn, so those made under a previous secret keep working until
+ * it is removed.
+ */
+export function deriveKeys(
+  config: {
+    readonly secret: string;
+    readonly previousSecrets?: readonly string[];
+    readonly app: string;
+  },
+  label: KeyLabel,
+): readonly Buffer[] {
+  return [config.secret, ...(config.previousSecrets ?? [])].map((secret) =>
+    deriveKey(secret, config.app, label),
   );
 }
 

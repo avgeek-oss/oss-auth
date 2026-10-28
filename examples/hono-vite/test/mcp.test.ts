@@ -93,6 +93,8 @@ describe.skipIf(!databaseUrl)("reference app with an MCP client", () => {
     });
     const config = loadAuthConfig("example", {
       EXAMPLE_SECRET: "e".repeat(32),
+      // The self-check has its own tests; here it would only add noise.
+      EXAMPLE_SELF_CHECK: "false",
       EXAMPLE_OIDC_ISSUER: mock.issuer,
       EXAMPLE_OIDC_CLIENT_ID: mock.clientId,
       EXAMPLE_OIDC_CLIENT_SECRET: mock.clientSecret,

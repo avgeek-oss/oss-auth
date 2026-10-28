@@ -46,6 +46,11 @@
       "types": "./dist/api-keys/index.d.ts",
       "import": "./dist/api-keys/index.js"
     },
+    "./jobs": {
+      "@avgeek-oss/source": "./src/jobs/index.ts",
+      "types": "./dist/jobs/index.d.ts",
+      "import": "./dist/jobs/index.js"
+    },
     "./mcp": {
       "@avgeek-oss/source": "./src/mcp/index.ts",
       "types": "./dist/mcp/index.d.ts",
