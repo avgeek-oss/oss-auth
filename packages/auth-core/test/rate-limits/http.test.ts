@@ -187,44 +187,75 @@ describe.skipIf(!databaseUrl)("rate limits over HTTP", () => {
     ).toBe(400);
   });
 
-  it("counts only failed grants per client and IP, and valid exchanges never", async () => {
+  it("counts only failed grants and client authentications, after the fact, and never refuses a valid request", async () => {
     const s = await mcp({ "oauth.token.failures": per(2) });
     const ada = await s.person("ada");
-    // Valid exchanges and refreshes do not count.
+    // Valid exchanges do not count.
     const tokens = [];
     for (let i = 0; i < 3; i++) tokens.push(await ada.tokens());
-    const bad = () =>
+    const badRefresh = () =>
       s.form("/oauth/token", {
         grant_type: "refresh_token",
         client_id: PUBLIC_CLIENT,
         refresh_token: "wrong",
       });
-    expect((await bad()).body).toMatchObject({ error: "invalid_grant" });
-    expect((await bad()).body).toMatchObject({ error: "invalid_grant" });
-    // Now even a good refresh from this client and IP waits.
-    const refresh = await fetch(`${s.api}/oauth/token`, {
+    expect((await badRefresh()).body).toMatchObject({ error: "invalid_grant" });
+    expect((await badRefresh()).body).toMatchObject({ error: "invalid_grant" });
+    // Over the limit, the next failure is a 429 instead of invalid_grant.
+    const third = await fetch(`${s.api}/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "refresh_token",
         client_id: PUBLIC_CLIENT,
-        refresh_token: tokens[0]?.refresh_token ?? "",
+        refresh_token: "wrong",
       }).toString(),
     });
-    await limited(refresh, "oauth");
-    // Another client from the same IP is unaffected.
+    await limited(third, "oauth");
+    // Valid refreshes and code exchanges from the same client and IP still
+    // succeed, and do not use the exhausted budget.
+    for (const t of tokens.slice(0, 2)) {
+      const refreshed = await s.form("/oauth/token", {
+        grant_type: "refresh_token",
+        client_id: PUBLIC_CLIENT,
+        refresh_token: t.refresh_token,
+      });
+      expect(refreshed.status).toBe(200);
+      expect(refreshed.body).toMatchObject({ token_type: "Bearer" });
+    }
+    await ada.tokens();
+    expect((await badRefresh()).status).toBe(429);
+
+    // invalid_client counts the same way, per client id.
     const grace = await s.person("grace");
-    await grace.tokens({ client: CONFIDENTIAL_CLIENT });
-    s.advance(30);
+    const wrongSecret = () =>
+      s.form(
+        "/oauth/token",
+        { grant_type: "refresh_token", refresh_token: "x" },
+        { id: CONFIDENTIAL_CLIENT, secret: "wrong" },
+      );
+    expect((await wrongSecret()).body).toMatchObject({
+      error: "invalid_client",
+    });
+    expect((await wrongSecret()).body).toMatchObject({
+      error: "invalid_client",
+    });
+    expect((await wrongSecret()).status).toBe(429);
+    const ci = await grace.tokens({ client: CONFIDENTIAL_CLIENT });
     expect(
       (
-        await s.form("/oauth/token", {
-          grant_type: "refresh_token",
-          client_id: PUBLIC_CLIENT,
-          refresh_token: tokens[1]?.refresh_token ?? "",
-        })
+        await s.form(
+          "/oauth/token",
+          { grant_type: "refresh_token", refresh_token: ci.refresh_token },
+          { id: CONFIDENTIAL_CLIENT, secret: CONFIDENTIAL_SECRET },
+        )
       ).status,
     ).toBe(200);
+
+    // The budget recovers: one failure is earned back every 30 seconds.
+    s.advance(30);
+    expect((await badRefresh()).body).toMatchObject({ error: "invalid_grant" });
+    expect((await badRefresh()).status).toBe(429);
   });
 
   it("limits /oauth/revoke and legacy registration with the OAuth error shape", async () => {

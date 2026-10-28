@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { createActor, type Actor } from "../actor.js";
 import type { AuthConfig } from "../config.js";
-import { AuthRequestError, RateLimitedError } from "../errors.js";
+import { AuthRequestError } from "../errors.js";
 import type { Auth, AuthEnv, AuthErrorBody } from "../hono/index.js";
 import { quoteIdent } from "../identifiers.js";
 import { deriveKey } from "../keys.js";
@@ -929,23 +929,21 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
       const form = await readForm(c);
       const presented = presentedClientId(c, form) ?? "";
       await limiter.enforce("oauth.token.client", presented);
-      // Failed grants and client authentications are counted per client and
-      // IP, after the fact, so that only failures are slowed down.
-      const failures = `${presented}\u0000${auth.ipKey(c)}`;
-      const gate = await limiter.check("oauth.token.failures", failures);
-      if (!gate.allowed)
-        throw new RateLimitedError(
-          "oauth.token.failures",
-          gate.retryAfterSeconds,
-        );
       try {
         return await exchange(c, form);
       } catch (error) {
+        // Failed grants and client authentications are counted per client
+        // and IP after the fact, like invalid bearer credentials: a request
+        // that succeeds is never refused and never counted, and a failure
+        // over the limit is answered with a 429 instead of its error.
         if (
           error instanceof OAuthError &&
           (error.error === "invalid_grant" || error.error === "invalid_client")
         )
-          await limiter.consume("oauth.token.failures", failures);
+          await limiter.enforce(
+            "oauth.token.failures",
+            `${presented}\u0000${auth.ipKey(c)}`,
+          );
         throw error;
       }
     },

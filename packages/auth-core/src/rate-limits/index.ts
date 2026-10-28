@@ -109,8 +109,8 @@ export interface RateLimiter {
   ): Promise<RateLimitResult>;
   /**
    * Whether one more request for `key` would be allowed, without counting
-   * it. For limits on failures: check first, then `consume` only when the
-   * request fails.
+   * it. To limit only failures, `consume` or `enforce` after a request
+   * fails instead, so that a request that succeeds is never refused.
    *
    * @throws {@link RateLimiterUnavailableError} when the store fails.
    */
