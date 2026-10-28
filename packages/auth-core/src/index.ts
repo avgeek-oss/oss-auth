@@ -40,6 +40,8 @@ export {
   InvalidApiKeyError,
   isAuthError,
   MigrationError,
+  RateLimitedError,
+  RateLimiterUnavailableError,
   SecretTooShortError,
   UnknownKeyLabelError,
   type AuthErrorCode,

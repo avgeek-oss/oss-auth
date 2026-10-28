@@ -32,6 +32,8 @@ export const KEY_LABELS = [
   "break-glass",
   /** Hashes the ids of pending OAuth consent requests at rest. */
   "oauth-request",
+  /** Hashes rate limit keys, so buckets never hold raw IPs or ids. */
+  "rate-limit",
 ] as const;
 
 /** One of {@link KEY_LABELS}. */

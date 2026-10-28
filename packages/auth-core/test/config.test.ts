@@ -49,6 +49,7 @@ describe("loadAuthConfig", () => {
       },
       scim: { tokens: [], externalIdIsSubject: false },
       oauth: { clients: [], legacyDcr: false },
+      rateLimits: { trustedProxies: [], policies: {} },
       apiKeys: {
         prefix: "posted",
         maxTtlSeconds: 365 * 86400,
@@ -371,6 +372,50 @@ describe("loadAuthConfig", () => {
       expect(variables({ ...base, POSTED_OAUTH_LEGACY_DCR: "maybe" })).toEqual([
         "POSTED_OAUTH_LEGACY_DCR",
       ]);
+    });
+  });
+
+  describe("rate limits", () => {
+    it("reads trusted proxies and policy overrides", () => {
+      const config = loadAuthConfig("posted", {
+        ...base,
+        POSTED_TRUSTED_PROXIES: " 10.0.0.0/8, 192.0.2.1 ,fd00::/8 ",
+        POSTED_RATE_LIMITS: JSON.stringify({
+          "oauth.token.ip": { limit: 300, periodSeconds: 60 },
+          "app.exports": { limit: 5, periodSeconds: 3600, burst: 2 },
+        }),
+      });
+      expect(config.rateLimits).toEqual({
+        trustedProxies: ["10.0.0.0/8", "192.0.2.1", "fd00::/8"],
+        policies: {
+          "oauth.token.ip": { limit: 300, periodSeconds: 60 },
+          "app.exports": { limit: 5, periodSeconds: 3600, burst: 2 },
+        },
+      });
+    });
+
+    it("rejects bad proxies and policies", () => {
+      for (const value of [
+        "10.0.0.0/33",
+        "proxy.example.com",
+        "10.0.0.0/8,nope",
+      ])
+        expect(variables({ ...base, POSTED_TRUSTED_PROXIES: value })).toEqual([
+          "POSTED_TRUSTED_PROXIES",
+        ]);
+      for (const value of [
+        "[]",
+        "nope",
+        JSON.stringify({ oidc: { limit: 0, periodSeconds: 60 } }),
+        JSON.stringify({ oidc: { limit: 1.5, periodSeconds: 60 } }),
+        JSON.stringify({ oidc: { limit: 10, periodSeconds: 86401 } }),
+        JSON.stringify({ oidc: { limit: 10, periodSeconds: 60, burst: 0 } }),
+        JSON.stringify({ oidc: { limit: 10, periodSeconds: 60, window: 5 } }),
+        JSON.stringify({ "Bad Name": { limit: 10, periodSeconds: 60 } }),
+      ])
+        expect(variables({ ...base, POSTED_RATE_LIMITS: value })).toEqual([
+          "POSTED_RATE_LIMITS",
+        ]);
     });
   });
 
