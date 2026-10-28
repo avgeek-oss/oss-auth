@@ -2,6 +2,11 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createRemoteJWKSet } from "jose";
 import type { Actor, ActorUser } from "../actor.js";
+import {
+  createApiKeys,
+  type ApiKeyRecord,
+  type ApiKeys,
+} from "../api-keys/index.js";
 import type { AuthConfig } from "../config.js";
 import { AuthRequestError, type AuthRequestErrorCode } from "../errors.js";
 import { quoteIdent } from "../identifiers.js";
@@ -14,7 +19,7 @@ import { postgresJtiStore } from "../oidc/jti-store.js";
 import { verifyLogoutToken } from "../oidc/logout.js";
 import { signInUser, type SignInOutcome } from "../oidc/users.js";
 import type { Sql } from "../postgres/sql.js";
-import { roleAtLeast, type Role } from "../roles.js";
+import { isRole, roleAtLeast, type Role } from "../roles.js";
 import {
   createSessions,
   type SessionRecord,
@@ -27,6 +32,8 @@ export interface AuthVariables<Ext extends object> {
   actor: Actor<Ext> | null;
   /** The caller's session, or `null`. Set by `middleware.actor`. */
   session: SessionRecord | null;
+  /** The API key the caller presented, or `null`. Set by `middleware.actor`. */
+  apiKey: ApiKeyRecord | null;
 }
 
 /** The Hono environment of the auth routes and middleware. */
@@ -43,6 +50,15 @@ export interface CreateAuthOptions<Ext extends object> {
   readonly hooks?: {
     /** Adds app-specific fields to each actor, such as a workspace id. */
     readonly extendActor?: (user: ActorUser) => Ext | Promise<Ext>;
+    /**
+     * Whether `actor` may create an API key for `workspace`. Without this
+     * hook, keys cannot have a workspace. auth-core stores the workspace
+     * opaquely; the app must still enforce it on every request.
+     */
+    readonly authorizeWorkspace?: (
+      actor: Actor<Ext>,
+      workspace: string,
+    ) => boolean | Promise<boolean>;
   };
   readonly stepUp?: {
     /** Require `mfa` in the provider's `amr` after step-up. Default true. */
@@ -75,12 +91,19 @@ export interface CreateAuthOptions<Ext extends object> {
 export interface Auth<Ext extends object> {
   /**
    * Mount under `basePath`: `GET /sign-in`, `GET /callback`,
-   * `POST /sign-out`, `GET /session`, `GET /step-up` and
-   * `POST /backchannel-logout`.
+   * `POST /sign-out`, `GET /session`, `GET /step-up`,
+   * `POST /backchannel-logout`, and the API key routes `GET /api-keys`,
+   * `POST /api-keys`, `POST /api-keys/:id/rotate` and
+   * `DELETE /api-keys/:id`.
    */
   readonly routes: Hono<AuthEnv<Ext>>;
   readonly middleware: {
-    /** Reads the session cookie and sets `actor` and `session` (or null). */
+    /**
+     * Sets `actor`, `session` and `apiKey` (or null). A request with an
+     * `Authorization: Bearer` header is authenticated by that API key alone
+     * and the session cookie is ignored; otherwise by the session cookie.
+     * Keys are never read from a query string or a cookie.
+     */
     readonly actor: MiddlewareHandler<AuthEnv<Ext>>;
     /** 401 `unauthenticated` without an actor. */
     readonly requireActor: MiddlewareHandler<AuthEnv<Ext>>;
@@ -88,7 +111,9 @@ export interface Auth<Ext extends object> {
     readonly requireRole: (minimum: Role) => MiddlewareHandler<AuthEnv<Ext>>;
     /**
      * 401 `step_up_required`, with `stepUpUrl`, unless the session
-     * authenticated at the provider within `maxAgeSeconds`.
+     * authenticated at the provider within `maxAgeSeconds`. 403
+     * `step_up_unavailable` for an API key: sensitive actions need a
+     * session.
      */
     readonly requireRecentAuth: (
       maxAgeSeconds: number,
@@ -96,11 +121,14 @@ export interface Auth<Ext extends object> {
     /**
      * On POST, PUT, PATCH and DELETE: 403 `origin_invalid` unless `Origin`
      * is the web origin, and 403 `csrf_header_missing` without the CSRF
-     * header.
+     * header. Requests with an `Authorization: Bearer` header are skipped:
+     * a cross-site page cannot send one, and they ignore cookies.
      */
     readonly trustedOrigin: MiddlewareHandler<AuthEnv<Ext>>;
   };
   readonly sessions: Sessions<Ext>;
+  /** The API key service, or `null` when no key prefix is configured. */
+  readonly apiKeys: ApiKeys<Ext> | null;
   readonly oidc: OidcClient;
   /** The session cookie's name. */
   readonly sessionCookie: string;
@@ -133,6 +161,30 @@ function errorResponse(
 
 const unauthenticated = () =>
   new AuthRequestError("unauthenticated", "Sign in to continue.");
+
+/** The token of an `Authorization: Bearer` header, `""` if malformed, or `null`. */
+function bearerToken(c: Context): string | null {
+  const header = c.req.header("authorization");
+  if (header === undefined || !/^bearer(\s|$)/i.test(header)) return null;
+  return /^bearer +([^\s]+) *$/i.exec(header)?.[1] ?? "";
+}
+
+/** An API key as the routes show it: never its secret or hash. */
+function keyView(key: ApiKeyRecord) {
+  return {
+    id: key.id,
+    name: key.name,
+    ceiling: key.ceiling,
+    workspace: key.workspace,
+    createdAt: key.createdAt.toISOString(),
+    expiresAt: key.expiresAt?.toISOString() ?? null,
+    lastUsedAt: key.lastUsedAt?.toISOString() ?? null,
+    replacedBy: key.replacedBy,
+    graceUntil: key.graceUntil?.toISOString() ?? null,
+  };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The session cookie name for an app and API origin. */
 export function sessionCookieName(app: string, apiOrigin: string): string {
@@ -189,6 +241,17 @@ export function createAuth<Ext extends object = Record<never, never>>(
       : {}),
     ...(clock ? { now: clock } : {}),
   });
+  const apiKeys =
+    config.apiKeys.prefix === null
+      ? null
+      : createApiKeys<Ext>({
+          sql,
+          config,
+          ...(options.hooks?.extendActor
+            ? { extendActor: options.hooks.extendActor }
+            : {}),
+          ...(clock ? { now: clock } : {}),
+        });
   const jtis = postgresJtiStore(config.schema);
   let jwks:
     { uri: string; keys: ReturnType<typeof createRemoteJWKSet> } | undefined;
@@ -207,9 +270,19 @@ export function createAuth<Ext extends object = Record<never, never>>(
     });
 
   const actor: MiddlewareHandler<AuthEnv<Ext>> = async (c, next) => {
-    const found = await sessions.lookup(getCookie(c, sessionCookie));
-    c.set("actor", found?.actor ?? null);
-    c.set("session", found?.session ?? null);
+    const token = bearerToken(c);
+    if (token !== null) {
+      const found =
+        apiKeys && token !== "" ? await apiKeys.verify(token) : null;
+      c.set("actor", found?.actor ?? null);
+      c.set("session", null);
+      c.set("apiKey", found?.key ?? null);
+    } else {
+      const found = await sessions.lookup(getCookie(c, sessionCookie));
+      c.set("actor", found?.actor ?? null);
+      c.set("session", found?.session ?? null);
+      c.set("apiKey", null);
+    }
     await next();
   };
 
@@ -234,26 +307,45 @@ export function createAuth<Ext extends object = Record<never, never>>(
       await next();
     };
 
+  /** The response that refuses a request without recent authentication. */
+  const recentAuthRefusal = (
+    c: Context<AuthEnv<Ext>>,
+    maxAgeSeconds: number,
+  ): Response | null => {
+    const current = c.get("actor");
+    const session = c.get("session");
+    if (current && current.credential.kind !== "session")
+      return errorResponse(
+        c,
+        new AuthRequestError(
+          "step_up_unavailable",
+          "This needs a signed-in session, not an API key.",
+        ),
+      );
+    if (!current || !session) return errorResponse(c, unauthenticated());
+    if (session.authenticatedAt.getTime() < nowMs() - maxAgeSeconds * 1000)
+      return errorResponse(
+        c,
+        new AuthRequestError(
+          "step_up_required",
+          "Confirm it's you to continue: sign in again at your identity provider.",
+        ),
+        { stepUpUrl },
+      );
+    return null;
+  };
+
   const requireRecentAuth =
     (maxAgeSeconds: number): MiddlewareHandler<AuthEnv<Ext>> =>
     async (c, next) => {
-      const session = c.get("session");
-      if (!c.get("actor") || !session)
-        return errorResponse(c, unauthenticated());
-      if (session.authenticatedAt.getTime() < nowMs() - maxAgeSeconds * 1000)
-        return errorResponse(
-          c,
-          new AuthRequestError(
-            "step_up_required",
-            "Confirm it's you to continue: sign in again at your identity provider.",
-          ),
-          { stepUpUrl },
-        );
+      const refusal = recentAuthRefusal(c, maxAgeSeconds);
+      if (refusal) return refusal;
       await next();
     };
 
   const trustedOrigin: MiddlewareHandler<AuthEnv<Ext>> = async (c, next) => {
-    if (SAFE_METHODS.has(c.req.method)) return next();
+    if (SAFE_METHODS.has(c.req.method) || bearerToken(c) !== null)
+      return next();
     if (c.req.header("origin") !== web)
       return errorResponse(
         c,
@@ -484,6 +576,167 @@ export function createAuth<Ext extends object = Record<never, never>>(
     return c.body(null, 200);
   });
 
+  // API keys ---------------------------------------------------------------
+
+  /** Seconds since sign-in within which a session may create an admin key. */
+  const ADMIN_KEY_RECENT_AUTH = 600;
+
+  const keyService = (): ApiKeys<Ext> => {
+    if (!apiKeys)
+      throw new AuthRequestError("not_found", "API keys are not enabled.");
+    return apiKeys;
+  };
+
+  const readJson = async (c: Context): Promise<Record<string, unknown>> => {
+    const text = await c.req.text();
+    if (text.trim() === "") return {};
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body))
+      throw new AuthRequestError(
+        "invalid_request",
+        "The body must be a JSON object.",
+        { reason: "body" },
+      );
+    return body as Record<string, unknown>;
+  };
+
+  // Key management needs a session: a key cannot mint or manage keys.
+  routes.use("/api-keys/*", actor, trustedOrigin, async (c, next) => {
+    keyService();
+    const current = c.get("actor");
+    if (!current) throw unauthenticated();
+    if (current.credential.kind !== "session")
+      throw new AuthRequestError(
+        "forbidden",
+        "API keys are managed from a signed-in session.",
+        { reason: "session_required" },
+      );
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
+
+  /** The signed-in actor; the middleware above guarantees one. */
+  const me = (c: Context<AuthEnv<Ext>>): Actor<Ext> => {
+    const current = c.get("actor");
+    if (!current) throw unauthenticated();
+    return current;
+  };
+
+  routes.get("/api-keys", async (c) => {
+    const current = me(c);
+    const other = c.req.query("user");
+    let userId = current.user.id;
+    if (other !== undefined && other !== current.user.id) {
+      if (!roleAtLeast(current.role, "admin"))
+        throw new AuthRequestError(
+          "forbidden",
+          "Only an admin can see other people's keys.",
+        );
+      if (!UUID.test(other))
+        throw new AuthRequestError("invalid_request", "No such user.", {
+          reason: "user",
+        });
+      userId = other;
+    }
+    return c.json({
+      apiKeys: (await keyService().list(userId)).map(keyView),
+    });
+  });
+
+  routes.post("/api-keys", async (c) => {
+    const current = me(c);
+    const body = await readJson(c);
+    const { name, ceiling, workspace } = body;
+    if (!isRole(ceiling))
+      throw new AuthRequestError(
+        "invalid_request",
+        "ceiling must be viewer, member or admin.",
+        { reason: "ceiling" },
+      );
+    if (ceiling === "admin") {
+      const refusal = recentAuthRefusal(c, ADMIN_KEY_RECENT_AUTH);
+      if (refusal) return refusal;
+    }
+    if (workspace !== undefined && workspace !== null) {
+      const authorize = options.hooks?.authorizeWorkspace;
+      if (!authorize)
+        throw new AuthRequestError(
+          "invalid_request",
+          "This app does not issue keys for workspaces.",
+          { reason: "workspace" },
+        );
+      if (
+        typeof workspace !== "string" ||
+        !(await authorize(current, workspace))
+      )
+        throw new AuthRequestError(
+          "forbidden",
+          "You cannot create keys for this workspace.",
+          { reason: "workspace" },
+        );
+    }
+    const expires = body.expiresInSeconds;
+    if (
+      expires !== undefined &&
+      expires !== null &&
+      typeof expires !== "number"
+    )
+      throw new AuthRequestError(
+        "invalid_request",
+        "expiresInSeconds must be a number of seconds or null.",
+        { reason: "expiry" },
+      );
+    const issued = await keyService().create({
+      userId: current.user.id,
+      name: typeof name === "string" ? name : "",
+      ceiling,
+      workspace: (workspace as string | null | undefined) ?? null,
+      ...(expires === undefined ? {} : { expiresInSeconds: expires }),
+    });
+    return c.json({ key: issued.key, apiKey: keyView(issued.record) }, 201);
+  });
+
+  routes.post("/api-keys/:id/rotate", async (c) => {
+    const current = me(c);
+    const body = await readJson(c);
+    const grace = body.graceSeconds ?? 0;
+    if (typeof grace !== "number")
+      throw new AuthRequestError(
+        "invalid_request",
+        "graceSeconds must be a number of seconds.",
+        { reason: "grace" },
+      );
+    const service = keyService();
+    const existing = await service.get(c.req.param("id"));
+    if (!existing || existing.userId !== current.user.id)
+      throw new AuthRequestError("not_found", "No such API key.");
+    if (existing.ceiling === "admin") {
+      const refusal = recentAuthRefusal(c, ADMIN_KEY_RECENT_AUTH);
+      if (refusal) return refusal;
+    }
+    const issued = await service.rotate(existing.id, {
+      graceSeconds: grace,
+      userId: current.user.id,
+    });
+    return c.json({ key: issued.key, apiKey: keyView(issued.record) }, 201);
+  });
+
+  routes.delete("/api-keys/:id", async (c) => {
+    const current = me(c);
+    const admin = roleAtLeast(current.role, "admin");
+    const revoked = await keyService().revoke(
+      c.req.param("id"),
+      admin ? {} : { userId: current.user.id },
+    );
+    if (!revoked) throw new AuthRequestError("not_found", "No such API key.");
+    return c.body(null, 204);
+  });
+
   return {
     routes,
     middleware: {
@@ -494,6 +747,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
       trustedOrigin,
     },
     sessions,
+    apiKeys,
     oidc,
     sessionCookie,
   };
