@@ -1,11 +1,10 @@
 -- Sign-in support: where each role came from, the back-channel logout
 -- replay cache, and an index for listing and revoking a user's sessions.
 
--- Where users.role was last set. Sign-in may change a role that came from
--- the role claim or the bootstrap admin, but never one SCIM set.
+-- Where users.role was last set: 'oidc' is the role claim at sign-in.
 ALTER TABLE users
   ADD COLUMN role_source text NOT NULL DEFAULT 'none'
-  CHECK (role_source IN ('none', 'oidc', 'bootstrap', 'scim', 'admin', 'operator'));
+  CHECK (role_source IN ('none', 'oidc', 'scim', 'admin', 'operator'));
 
 -- Back-channel logout token ids already accepted, kept until the token would
 -- be refused as too old anyway.

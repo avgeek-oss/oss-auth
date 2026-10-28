@@ -4,8 +4,7 @@ import type { SqlQueryable } from "../postgres/sql.js";
 import { resolveRole, type Role } from "../roles.js";
 
 /** Where a user's role came from. Stored in `users.role_source`. */
-export type RoleSource =
-  "none" | "oidc" | "bootstrap" | "scim" | "admin" | "operator";
+export type RoleSource = "none" | "oidc" | "scim" | "admin" | "operator";
 
 /** Why an OIDC sign-in was refused after the provider authenticated it. */
 export type SignInDeniedReason =
@@ -47,20 +46,6 @@ function stringClaim(value: unknown, max: number): string | null {
   return Array.from(trimmed).slice(0, max).join("");
 }
 
-function bootstrapMatches(
-  config: AuthConfig,
-  claims: Readonly<Record<string, unknown>>,
-): boolean {
-  const bootstrap = config.bootstrapAdmin;
-  if (bootstrap === null) return false;
-  if (bootstrap.kind === "sub") return claims.sub === bootstrap.value;
-  return (
-    claims.email_verified === true &&
-    typeof claims.email === "string" &&
-    claims.email.trim().toLowerCase() === bootstrap.value
-  );
-}
-
 /**
  * Maps validated ID token claims to a user, inside the caller's transaction.
  *
@@ -72,8 +57,7 @@ function bootstrapMatches(
  *   {@link resolveRole} always refuses.
  * - With `<APP>_ROLE_SOURCE=claims` (the default), the role claim sets the
  *   role. A missing claim keeps the role of a user who has one, and refuses
- *   a new or never-assigned user unless they are the bootstrap admin, who
- *   becomes `admin` while the claim is missing.
+ *   a new or never-assigned user: a role only ever comes from the provider.
  * - With `<APP>_ROLE_SOURCE=scim`, SCIM group membership sets the role and
  *   sign-in never changes it or creates users: a person SCIM has not
  *   provisioned and assigned is refused as `unassigned`.
@@ -93,7 +77,6 @@ export async function signInUser(
     stringClaim(claims.preferred_username, 256);
   const resolved = resolveRole(claims, config.oidc.roleMap);
   const scimRoles = config.roleSource === "scim";
-  const bootstrap = !scimRoles && bootstrapMatches(config, claims);
 
   const deny = (
     reason: SignInDeniedReason,
@@ -129,16 +112,9 @@ export async function signInUser(
   }
   if (existing === undefined) {
     if (scimRoles) return deny("unassigned", null);
-    let role: Role;
-    let source: RoleSource;
-    if (resolved === "none") return deny("no_role", null);
-    if (resolved !== null) {
-      role = resolved;
-      source = "oidc";
-    } else if (bootstrap) {
-      role = "admin";
-      source = "bootstrap";
-    } else return deny("no_role", null);
+    if (resolved === null || resolved === "none") return deny("no_role", null);
+    const role: Role = resolved;
+    const source: RoleSource = "oidc";
     const [created] = await tx.query<UserRecord>(
       `INSERT INTO ${users} (iss, sub, email, display_name, role, role_source)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -165,9 +141,6 @@ export async function signInUser(
   } else if (resolved !== null) {
     role = resolved;
     source = "oidc";
-  } else if (bootstrap && existing.roleSource !== "scim") {
-    role = "admin";
-    source = "bootstrap";
   } else if (existing.roleSource === "none") {
     // Provisioned but never given a role: treat like a new user.
     return deny("no_role", existing.id);

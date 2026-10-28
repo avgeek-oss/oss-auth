@@ -47,7 +47,6 @@ describe("loadAuthConfig", () => {
         roleMap: { claims: ["roles"], values: DEFAULT_ROLE_MAP_VALUES },
         scopes: ["openid", "email", "profile"],
       },
-      bootstrapAdmin: null,
       scim: { tokens: [], externalIdIsSubject: false },
       roleSource: "claims",
       origins: {
@@ -267,28 +266,6 @@ describe("loadAuthConfig", () => {
       ])
         expect(variables({ ...base, POSTED_OIDC_SCOPES: scopes })).toEqual([
           "POSTED_OIDC_SCOPES",
-        ]);
-    });
-  });
-
-  describe("bootstrap admin", () => {
-    it("reads an email, lowercased, or a subject", () => {
-      expect(
-        loadAuthConfig("posted", {
-          ...base,
-          POSTED_BOOTSTRAP_ADMIN: " Ada@Example.com ",
-        }).bootstrapAdmin,
-      ).toEqual({ kind: "email", value: "ada@example.com" });
-      expect(
-        loadAuthConfig("posted", { ...base, POSTED_BOOTSTRAP_ADMIN: "a1b2C3" })
-          .bootstrapAdmin,
-      ).toEqual({ kind: "sub", value: "a1b2C3" });
-    });
-
-    it("rejects blank, overlong and control-character values", () => {
-      for (const value of ["   ", "x".repeat(321), "ad\nmin"])
-        expect(variables({ ...base, POSTED_BOOTSTRAP_ADMIN: value })).toEqual([
-          "POSTED_BOOTSTRAP_ADMIN",
         ]);
     });
   });

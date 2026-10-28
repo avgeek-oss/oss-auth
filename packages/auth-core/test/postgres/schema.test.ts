@@ -301,7 +301,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           [id],
         );
         expect(row?.source).toBe("none");
-        for (const source of ["oidc", "bootstrap", "scim", "admin", "operator"])
+        for (const source of ["oidc", "scim", "admin", "operator"])
           await sql.query(
             `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
             [id, source],

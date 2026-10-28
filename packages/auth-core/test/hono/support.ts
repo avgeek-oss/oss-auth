@@ -49,7 +49,6 @@ export const USERS: readonly MockUser[] = [
     groups: ["mill-admins"],
   },
   { sub: "claimless", email: "claimless@example.com", name: "Claimless" },
-  { sub: "boss", email: "boss@example.com", name: "Boss" },
 ];
 
 /** A running API, provider, database schema and browser. */
