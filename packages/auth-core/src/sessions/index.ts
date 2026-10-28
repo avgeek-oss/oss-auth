@@ -92,13 +92,18 @@ export interface Sessions<Ext extends object> {
   ): Promise<boolean>;
   /**
    * Revokes the sessions a back-channel logout names: by provider `sid`, by
-   * `sub`, or by both (sessions matching both). Returns how many.
+   * `sub`, or by both (sessions matching both), with their audit events.
+   * Returns how many. Pass a transaction as `db` to make it part of a larger
+   * change; otherwise it runs in its own.
    */
-  revokeForProvider(input: {
-    readonly iss: string;
-    readonly sub: string | null;
-    readonly sid: string | null;
-  }): Promise<number>;
+  revokeForProvider(
+    input: {
+      readonly iss: string;
+      readonly sub: string | null;
+      readonly sid: string | null;
+    },
+    db?: SqlQueryable,
+  ): Promise<number>;
 }
 
 const SESSION_COLUMNS = `s.id_hash AS "idHash", s.user_id AS "userId",
@@ -307,9 +312,9 @@ export function createSessions<Ext extends object = Record<never, never>>(
       });
     },
 
-    async revokeForProvider({ iss, sub, sid }) {
+    async revokeForProvider({ iss, sub, sid }, db) {
       if (sub === null && sid === null) return 0;
-      return sql.transaction((tx) =>
+      const run = (tx: SqlQueryable) =>
         revokeWhere(
           tx,
           `s.user_id IN (SELECT id FROM ${users} WHERE iss = $2 AND ($3::text IS NULL OR sub = $3))
@@ -317,8 +322,8 @@ export function createSessions<Ext extends object = Record<never, never>>(
           [iss, sub, sid],
           "idp_logout",
           { type: "idp", issuer: iss },
-        ),
-      );
+        );
+      return db ? run(db) : sql.transaction(run);
     },
   };
 }

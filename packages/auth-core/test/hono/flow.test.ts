@@ -756,12 +756,74 @@ describe.skipIf(!databaseUrl)("back-channel logout", () => {
     const sid = await signedIn(s);
     const token = await s.mock.logoutToken({ sid });
     expect((await post(s, token)).status).toBe(200);
-    expect(await reason(await post(s, token))).toBe("logout_token_invalid");
+    const replay = await post(s, token);
+    expect(replay.status).toBe(400);
+    expect(await replay.json()).toEqual({
+      error: {
+        code: "logout_token_invalid",
+        message: "The logout token was already used.",
+      },
+    });
     const [row] = await rows<{ count: number }>(
       s,
       `SELECT count(*)::int AS "count" FROM {schema}.logout_jtis`,
     );
     expect(row?.count).toBe(1);
+  });
+});
+
+describe.skipIf(!databaseUrl)("back-channel logout atomicity", () => {
+  it("records nothing when revocation fails, so the provider's retry works", async () => {
+    const s = await stack();
+    s.mock.setLogin({ sub: "ada" });
+    await s.signIn();
+    const [session] = await rows<{ sid: string }>(
+      s,
+      `SELECT provider_sid AS "sid" FROM {schema}.sessions`,
+    );
+    const token = await s.mock.logoutToken({ sid: session?.sid ?? "" });
+    const jtiCount = async () =>
+      (
+        await rows<{ count: number }>(
+          s,
+          `SELECT count(*)::int AS "count" FROM {schema}.logout_jtis`,
+        )
+      )[0]?.count;
+
+    // The first revocation fails once, after the jti insert has run.
+    const original = s.auth.sessions.revokeForProvider.bind(s.auth.sessions);
+    let failures = 0;
+    s.auth.sessions.revokeForProvider = async (input, db) => {
+      if (failures++ === 0) {
+        await db?.query("SELECT 1");
+        throw new Error("revocation failed");
+      }
+      return original(input, db);
+    };
+
+    const failed = await s.mock.sendBackchannelLogout(token);
+    expect(failed.status).toBe(500);
+    expect(await jtiCount()).toBe(0);
+    expect((await s.call("/auth/session")).status).toBe(200);
+
+    // The provider retries the same token: it is accepted and revokes.
+    const retried = await s.mock.sendBackchannelLogout(token);
+    expect(retried.status).toBe(200);
+    expect(await jtiCount()).toBe(1);
+    expect((await s.call("/auth/session")).status).toBe(401);
+    const revoked = await rows<{ reason: string }>(
+      s,
+      `SELECT data->>'reason' AS "reason" FROM {schema}.audit_events WHERE type = 'session.revoked'`,
+    );
+    expect(revoked).toEqual([{ reason: "idp_logout" }]);
+
+    // A true replay after success is still refused.
+    const replay = await s.mock.sendBackchannelLogout(token);
+    expect(replay.status).toBe(400);
+    expect(
+      ((await replay.json()) as { error: { message: string } }).error.message,
+    ).toBe("The logout token was already used.");
+    expect(failures).toBe(2);
   });
 });
 

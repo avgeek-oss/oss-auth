@@ -299,19 +299,51 @@ describe.skipIf(!databaseUrl).each(adapters)(
     });
 
     it("remembers logout token ids once and cleans up expired ones", async () => {
-      const jtis = postgresJtiStore(sql, schema);
+      const jtis = postgresJtiStore(schema);
       const later = new Date(Date.now() + 600_000);
-      expect(await jtis.remember(ISS, "jti-1", later)).toBe(true);
-      expect(await jtis.remember(ISS, "jti-1", later)).toBe(false);
-      expect(await jtis.remember("https://other", "jti-1", later)).toBe(true);
-      expect(await jtis.remember(ISS, "old", new Date(Date.now() - 1000))).toBe(
+      expect(await jtis.remember(sql, ISS, "jti-1", later)).toBe(true);
+      expect(await jtis.remember(sql, ISS, "jti-1", later)).toBe(false);
+      expect(await jtis.remember(sql, "https://other", "jti-1", later)).toBe(
         true,
       );
-      await jtis.remember(ISS, "jti-2", later);
+      expect(
+        await jtis.remember(sql, ISS, "old", new Date(Date.now() - 1000)),
+      ).toBe(true);
+      await jtis.remember(sql, ISS, "jti-2", later);
       const rows = await sql.query<{ jti: string }>(
         `SELECT jti FROM ${t("logout_jtis")} ORDER BY jti, iss`,
       );
       expect(rows.map((r) => r.jti)).toEqual(["jti-1", "jti-1", "jti-2"]);
+    });
+
+    it("records a logout id and its revocations together or not at all", async () => {
+      now = new Date();
+      const userId = await user();
+      const { token } = await start(userId, { sid: "sid-atomic" });
+      const jtis = postgresJtiStore(schema);
+      const later = new Date(Date.now() + 600_000);
+      const failure = new Error("stop");
+      await expect(
+        sql.transaction(async (tx) => {
+          await jtis.remember(tx, ISS, "jti-atomic", later);
+          await sessions.revokeForProvider(
+            { iss: ISS, sub: null, sid: "sid-atomic" },
+            tx,
+          );
+          throw failure;
+        }),
+      ).rejects.toBe(failure);
+      expect(await sessions.lookup(token)).not.toBeNull();
+      expect(await jtis.remember(sql, ISS, "jti-atomic", later)).toBe(true);
+      expect(
+        await sql.transaction((tx) =>
+          sessions.revokeForProvider(
+            { iss: ISS, sub: null, sid: "sid-atomic" },
+            tx,
+          ),
+        ),
+      ).toBe(1);
+      expect(await sessions.lookup(token)).toBeNull();
     });
   },
 );

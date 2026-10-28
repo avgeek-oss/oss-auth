@@ -190,7 +190,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
       : {}),
     ...(clock ? { now: clock } : {}),
   });
-  const jtis = postgresJtiStore(sql, config.schema);
+  const jtis = postgresJtiStore(config.schema);
   let jwks:
     { uri: string; keys: ReturnType<typeof createRemoteJWKSet> } | undefined;
 
@@ -475,11 +475,20 @@ export function createAuth<Ext extends object = Record<never, never>>(
       issuer: metadata.issuer,
       clientId: config.oidc.clientId,
       keys: jwks.keys,
-      jtis,
       clockToleranceSeconds: oidc.clockToleranceSeconds,
       now: nowMs,
     });
-    await sessions.revokeForProvider(logout);
+    // Recording the jti and revoking commit together: if the revocation
+    // fails, the provider's retry of the same token still works.
+    await sql.transaction(async (tx) => {
+      if (!(await jtis.remember(tx, logout.iss, logout.jti, logout.expiresAt)))
+        throw new AuthRequestError(
+          "logout_token_invalid",
+          "The logout token was already used.",
+          { reason: "replay" },
+        );
+      await sessions.revokeForProvider(logout, tx);
+    });
     return c.body(null, 200);
   });
 
