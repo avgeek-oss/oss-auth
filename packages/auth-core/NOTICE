@@ -1,0 +1,5 @@
+Avgeek OSS Auth
+Copyright Avgeek, Inc.
+
+Built with Zod. The PostgreSQL adapters work with node-postgres and
+Postgres.js. Third-party dependencies retain their own licenses.

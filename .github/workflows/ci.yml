@@ -1,0 +1,205 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  # The Cut release workflow starts this on a tag it created. A tag pushed
+  # with the workflow token does not trigger the push event above.
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # Pull request runs are grouped by branch so a newer push supersedes the
+  # running check. Every other run is grouped by commit, so main pushes and
+  # tags are never cancelled or replaced while pending; the release checks
+  # need a result for each exact commit.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  # Development and verify run on the Node version in .nvmrc. The published
+  # packages support Node 24 and later, so this job keeps that floor tested:
+  # it builds and runs the unit tests on Node 24.
+  node-24:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    # About 25 seconds.
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+  verify:
+    # A release tag points at a commit that main already verified; the
+    # publish job reuses that run's artifact instead of verifying again.
+    # verify is the single gate, so it still runs when node-24 fails and
+    # then fails itself: a job skipped by a failed need would count as
+    # passing for a required check.
+    needs: node-24
+    if: ${{ !cancelled() && github.ref_type != 'tag' }}
+    runs-on: ubuntu-latest
+    # About 40 seconds.
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      # Fails on any moderate or higher advisory in the lockfile, dev
+      # dependencies included.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level=moderate
+      - name: Require the Node 24 job
+        if: ${{ !cancelled() }}
+        env:
+          NODE_24_RESULT: ${{ needs.node-24.result }}
+        run: |
+          if [ "$NODE_24_RESULT" != "success" ]; then
+            echo "::error::The node-24 job is $NODE_24_RESULT. The packages support Node 24, so its build and unit tests must pass."
+            exit 1
+          fi
+      # Only a release needs the tarballs, and it reads them from the main
+      # run of the tagged commit.
+      - name: Pack tarballs
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p artifacts
+          for dir in packages/*; do (cd "$dir" && pnpm pack --pack-destination ../../artifacts); done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: packages
+          if-no-files-found: error
+          path: artifacts/
+          retention-days: 30
+  publish:
+    if: ${{ !cancelled() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    needs: verify
+    runs-on: ubuntu-latest
+    # About 45 seconds. A cut-off publish can leave the packages half
+    # released, so this allows for a slow registry.
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          scope: "@avgeek-oss"
+      - name: Validate release tag and main ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for pkg in packages/*/package.json; do
+            version=$(node -p "require('./$pkg').version")
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::$pkg is $version, tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main. Release only commits that main has verified."
+            exit 1
+          fi
+          # Cut release refuses a lower version; this covers a tag pushed by
+          # hand. Publishing it would move npm's latest dist-tag back.
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1)
+          if [ -n "$latest" ] && [ "$(printf '%s\n' "$latest" "$GITHUB_REF_NAME" | sort -V | tail -1)" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::$GITHUB_REF_NAME is lower than the latest release $latest. Releases only move forward."
+            exit 1
+          fi
+      - name: Download the artifact of the verified main run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=5" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main")] | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$run" ]; then
+            echo "::error::No successful CI push run exists on main for $GITHUB_SHA. Merge the commit, let main verify it, then release it."
+            exit 1
+          fi
+          echo "Using the artifact of run $run for $GITHUB_SHA."
+          if ! gh run download "$run" --name packages --dir artifacts; then
+            echo "::error::Run $run has no 'packages' artifact. Artifacts expire after 30 days; re-run that run's verify job, then start this workflow on $GITHUB_REF_NAME again."
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          for name in core; do
+            file="artifacts/avgeek-oss-auth-$name-$version.tgz"
+            if [ ! -f "$file" ]; then
+              echo "::error::The artifact of run $run has no $file."
+              exit 1
+            fi
+          done
+      # A dry run also fails when a version is already on npm.
+      - name: Check npm tarball publication without uploading
+        run: |
+          for name in core; do
+            npm publish ./artifacts/avgeek-oss-auth-$name-*.tgz --access public --dry-run --ignore-scripts --registry=https://registry.npmjs.org
+          done
+      # Publishes through npm trusted publishing, which adds provenance.
+      # Configure each package's trusted publisher on npmjs.com before the
+      # first release. Packages added later go in the lists above and here,
+      # after the packages they depend on.
+      - name: Publish tarballs
+        run: |
+          set -euo pipefail
+          # A bare "dir/file.tgz" is read by npm as a GitHub owner/repo spec,
+          # so the paths must start with ./ to be treated as local tarballs.
+          npm publish ./artifacts/avgeek-oss-auth-core-*.tgz --access public
+
+  # Records the published version on GitHub with its changelog section, as
+  # the application repositories do. A separate job keeps write access to
+  # the repository away from the npm publish job.
+  github-release:
+    needs: publish
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    # About 10 seconds.
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## / { if (found) exit; found = ($2 == v); next } found { print }' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          title="Auth packages $version"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
+          fi

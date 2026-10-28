@@ -1,0 +1,20 @@
+version: 2
+# One weekly pull request covers every ecosystem below. Major versions are
+# left for deliberate upgrades, and the Node image stays on the major the
+# project supports. Security updates are raised separately as they appear.
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: weekly
+updates:
+  - package-ecosystem: npm
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: dependencies
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: dependencies
