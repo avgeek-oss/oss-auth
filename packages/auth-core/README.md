@@ -8,6 +8,7 @@ The server half of Avgeek OSS auth: sign-in through the organisation's OpenID pr
 | `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
 | `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
 | `@avgeek-oss/auth-core/api-keys` | `createApiKeys`: personal API keys with a role ceiling. Issue, list, rotate, revoke, verify.                                               |
+| `@avgeek-oss/auth-core/mcp`      | `createMcpAuth`: the OAuth 2.1 authorization server for MCP clients and `requireMcpToken` for its resources.                               |
 | `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
 | `@avgeek-oss/auth-core/scim`     | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
 | `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
@@ -82,6 +83,8 @@ Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 | `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one. |
 | `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                   |
 | `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                       |
+| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                          |
+| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                              |
 | `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                          |
 | `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                   |
 | `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                            |
@@ -114,6 +117,49 @@ const auth = createAuth({
 ```
 
 `createApiKeys({ config, sql })` from `@avgeek-oss/auth-core/api-keys` offers the same operations without Hono, and `auth.apiKeys` is the instance `createAuth` uses.
+
+## MCP authorization server
+
+Each app is its own OAuth 2.1 authorization server for MCP clients, following the MCP authorization specification (2026-07-28). People still sign in through the organisation's provider; the app then asks them to approve the client on its consent page and issues its own short-lived, audience-bound tokens. The scopes are the role names, and a grant acts with the lower of the role it was approved with and the person's current role, exactly like an API key.
+
+```ts
+import { createMcpAuth } from "@avgeek-oss/auth-core/mcp";
+
+const mcp = createMcpAuth({
+  config,
+  sql,
+  auth, // from createAuth
+  resources: [
+    { path: "/mcp", name: "Posted MCP" },
+    { path: "/v1", name: "Posted API" },
+  ],
+  hooks: {
+    // Optional: let people limit a grant to some boards on the consent page.
+    validateRestrictions: (actor, restrictions) =>
+      checkBoards(actor, restrictions),
+  },
+});
+app.route("/", mcp.routes);
+app.post("/mcp", mcp.requireMcpToken({ resource: "/mcp" }), handleMcp);
+app.get("/v1/boards", mcp.requireMcpToken({ resource: "/v1" }), listBoards);
+```
+
+- **Issuer and metadata.** The issuer is `<APP>_API_ORIGIN`. It serves `/.well-known/oauth-authorization-server` (RFC 8414), with S256 only, `authorization_response_iss_parameter_supported`, `client_id_metadata_document_supported` and the role names as `scopes_supported`. Each resource has its protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource<path>`, and its identifier is the API origin plus the path.
+- **Authorization.** `/oauth/authorize` takes the code flow with PKCE (S256), a `resource` that must be one of the configured ones (RFC 8707), `state`, and an optional `scope` naming roles. It returns `iss` (RFC 9207) on every redirect, errors included. Redirect URIs must be `https` or loopback `http` and match exactly, except for the port of a loopback IP literal (RFC 8252). Without a session it sends the person to `/auth/sign-in`; with one, to the web origin's `/oauth/consent?request=<id>`.
+- **Consent.** The consent page calls `GET /oauth/consent/:id` with the session for the client's name, logo, redirect host (always show it) and whether it is on this computer, the resource, and the ceilings the person may choose, then `POST /oauth/consent/:id` with `{ decision: "approve" | "deny", ceiling, restrictions? }`, and navigates to the returned `redirectUri`. The ceiling cannot exceed the person's role, an `admin` ceiling needs a sign-in within 10 minutes, and restrictions need `hooks.validateRestrictions`. The request is bound to the first person who opens it, decided once, and expires after 10 minutes.
+- **Tokens.** `/oauth/token` redeems a code (single use, 60 seconds) after checking the client, the redirect URI and the PKCE verifier; only a replay that passes all of them revokes the grant. Access tokens last 15 minutes. Refresh tokens rotate on every use, expire after 30 idle days and 90 days in all, and a reused one revokes its whole family and the grant. Tokens are bound to one resource, and the `resource` parameter must match. `/oauth/revoke` (RFC 7009) ends a token's family.
+- **Clients.** A client is pre-registered in `<APP>_OAUTH_CLIENTS` (public, or confidential with a `client_secret` and HTTP Basic), or identified by the `https` URL of its client metadata document. Documents are fetched defensively: public addresses only after DNS, the connection pinned to the checked address, no redirects, `application/json`, at most 5 KB, 3 seconds in all; they are cached for their `max-age`, at most a day. Legacy dynamic registration is off unless `<APP>_OAUTH_LEGACY_DCR=true`.
+
+  ```sh
+  POSTED_OAUTH_CLIENTS='[{"client_id":"posted-cli","client_name":"Posted CLI","redirect_uris":["http://127.0.0.1/callback"]}]'
+  ```
+
+- **Resource server.** `requireMcpToken({ resource, role? })` answers 401 with `WWW-Authenticate: Bearer resource_metadata="…", scope="<role>"` without a valid token for that resource, and 403 `insufficient_scope` below `role`. It sets an actor whose credential is `{ kind: "oauth", id, ceiling, restrictions }`, so `requireRole` works as for sessions and keys. The app must enforce `restrictions` itself.
+- **Grants follow their owner** as API keys do: a NULL role suspends them, a lower role revokes those above it, and deactivation or deletion revokes them all.
+- **Connected apps.** `GET /auth/connected-apps` lists the person's grants with the client's name and logo, ceiling, resources, creation and last use; `DELETE /auth/connected-apps/:id` revokes one. Admins may pass `?user=` and revoke anyone's.
+- **Housekeeping.** `mcp.purgeExpired()` deletes consent requests, codes and tokens that expired more than a day ago; run it from the app's scheduler.
+
+With authentik, nothing changes at the provider: people sign in to the app as before, and the app, not authentik, is the authorization server for its MCP clients.
 
 ## SCIM
 
