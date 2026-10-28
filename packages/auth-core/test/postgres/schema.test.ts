@@ -231,6 +231,68 @@ describe.skipIf(!databaseUrl).each(adapters)(
       });
     });
 
+    describe("0003", () => {
+      it("lets a SCIM user exist with only a userName, unique among live users", async () => {
+        const insert = (name: string) =>
+          sql.query<{ id: string }>(
+            `INSERT INTO ${t("users")} (iss, user_name) VALUES ($1, $2) RETURNING id`,
+            [ISS, name],
+          );
+        const [first] = await insert("Scim@Example.com");
+        await expect(insert("scim@example.com")).rejects.toThrow(
+          /users_user_name_key/,
+        );
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now(), deleted_at = now() WHERE id = $1`,
+          [first?.id],
+        );
+        await insert("scim@example.com");
+        await fails(
+          `INSERT INTO ${t("users")} (iss) VALUES ($1)`,
+          [ISS],
+          /users_identified/,
+        );
+      });
+
+      it("keeps group names unique ignoring case and keeps tombstones out of groups", async () => {
+        const [g] = await sql.query<{ id: string }>(
+          `INSERT INTO ${t("scim_groups")} (display_name) VALUES ('posted-admins') RETURNING id`,
+        );
+        await expect(
+          sql.query(
+            `INSERT INTO ${t("scim_groups")} (display_name) VALUES ('Posted-Admins')`,
+          ),
+        ).rejects.toThrow(/scim_groups_display_name_key/);
+        await fails(
+          `INSERT INTO ${t("scim_groups")} (display_name) VALUES ('')`,
+        );
+        const live = await createUser();
+        await sql.query(
+          `INSERT INTO ${t("scim_group_members")} VALUES ($1, $2)`,
+          [g?.id, live],
+        );
+        const gone = await createUser({
+          active: false,
+          deactivated_at: new Date(),
+          deleted_at: new Date(),
+        });
+        await fails(
+          `INSERT INTO ${t("scim_group_members")} VALUES ($1, $2)`,
+          [g?.id, gone],
+          /deleted/,
+        );
+        await sql.query(`DELETE FROM ${t("scim_groups")} WHERE id = $1`, [
+          g?.id,
+        ]);
+        expect(
+          await sql.query(
+            `SELECT 1 FROM ${t("scim_group_members")} WHERE user_id = $1`,
+            [live],
+          ),
+        ).toEqual([]);
+      });
+    });
+
     describe("0002", () => {
       it("records where a role came from, defaulting to none", async () => {
         const id = await createUser();

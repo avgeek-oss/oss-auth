@@ -16,7 +16,7 @@ import {
 import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
 
 const core = await loadMigrations();
-const BUNDLED = ["0001_core.sql", "0002_sessions_oidc.sql"];
+const BUNDLED = ["0001_core.sql", "0002_sessions_oidc.sql", "0003_scim.sql"];
 const extra = (
   name: string,
   body = "CREATE TABLE extra (n int);",
@@ -156,6 +156,8 @@ describe.skipIf(!databaseUrl).each(adapters)(
         expect((await tables("auth")).map((t) => t.name)).toEqual([
           "logout_jtis",
           "schema_migrations",
+          "scim_group_members",
+          "scim_groups",
           "sessions",
           "users",
         ]);
@@ -177,6 +179,8 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect((await tables(schema)).map((t) => t.name)).toEqual([
         "logout_jtis",
         "schema_migrations",
+        "scim_group_members",
+        "scim_groups",
         "sessions",
         "users",
       ]);
@@ -201,6 +205,8 @@ describe.skipIf(!databaseUrl).each(adapters)(
         [schema],
       );
       expect(functions.map((f) => f.name)).toEqual([
+        "scim_group_members_before_insert",
+        "scim_groups_before_update",
         "sessions_before_insert",
         "sessions_before_update",
         "users_before_update",
