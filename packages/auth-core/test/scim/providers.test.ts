@@ -76,7 +76,7 @@ describe.skipIf(!databaseUrl)("provider request fixtures", () => {
       (await s.json("PATCH", `/Groups/${groupId}`, authentik.removeMember(id)))
         .status,
     ).toBe(200);
-    expect(await user(s, id)).toMatchObject({ source: "none" });
+    expect(await user(s, id)).toMatchObject({ role: null, source: "scim" });
     expect(await signedIn.live()).toBe(false);
 
     await s.json("PATCH", `/Groups/${groupId}`, authentik.addMember(id));
@@ -118,7 +118,7 @@ describe.skipIf(!databaseUrl)("provider request fixtures", () => {
     await s.json("PATCH", `/Groups/${groupId}`, okta.rename(groupId));
     expect(await user(s, id)).toMatchObject({ role: "admin" });
     await s.json("PATCH", `/Groups/${groupId}`, okta.removeMember(id));
-    expect(await user(s, id)).toMatchObject({ source: "none" });
+    expect(await user(s, id)).toMatchObject({ role: null, source: "scim" });
 
     const off = await s.json("PATCH", `/Users/${id}`, okta.deactivate());
     expect(off.body.active).toBe(false);
@@ -180,7 +180,7 @@ describe.skipIf(!databaseUrl)("provider request fixtures", () => {
       (await s.json("PATCH", `/Users/${id}`, entra.enable())).body.active,
     ).toBe(true);
     await s.json("PATCH", `/Groups/${groupId}`, entra.removeMember(id));
-    expect(await user(s, id)).toMatchObject({ source: "none" });
+    expect(await user(s, id)).toMatchObject({ role: null, source: "scim" });
     expect((await s.request("DELETE", `/Users/${id}`)).status).toBe(204);
     expect((await s.json("GET", `/Users/${id}`)).status).toBe(404);
   });

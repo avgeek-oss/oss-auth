@@ -69,8 +69,8 @@ async function startSession(s: ScimStack, userId: string) {
 
 async function userRow(s: ScimStack, id: string) {
   const [row] = await s.rows<{
-    role: string;
-    source: string;
+    role: string | null;
+    source: string | null;
     active: boolean;
     deleted: boolean;
   }>(
@@ -227,12 +227,13 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
       const [row] = await s.rows<{
         iss: string;
         sub: string | null;
-        source: string;
+        role: string | null;
+        source: string | null;
       }>(
-        `SELECT iss, sub, role_source AS "source" FROM {schema}.users WHERE id = $1`,
+        `SELECT iss, sub, role, role_source AS "source" FROM {schema}.users WHERE id = $1`,
         [id],
       );
-      expect(row).toEqual({ iss: ISSUER, sub: null, source: "none" });
+      expect(row).toEqual({ iss: ISSUER, sub: null, role: null, source: null });
 
       const replaced = await s.json(
         "PUT",
@@ -732,7 +733,7 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
     it("gives the highest mapped role and downgrades immediately on removal", async () => {
       const s = await stack(SCIM);
       const id = await create(s, "ada");
-      expect(await userRow(s, id)).toMatchObject({ source: "none" });
+      expect(await userRow(s, id)).toMatchObject({ role: null, source: null });
       const admins = await group(s, "posted-admins", [id]);
       const members = await group(s, "Posted-Members", [id]);
       await group(s, "unrelated", [id]);
@@ -759,7 +760,10 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
         `/Groups/${members}`,
         patchBody({ op: "remove", path: "members", value: [{ value: id }] }),
       );
-      expect(await userRow(s, id)).toMatchObject({ source: "none" });
+      expect(await userRow(s, id)).toMatchObject({
+        role: null,
+        source: "scim",
+      });
       expect(await sessions.lookup(token)).toBeNull();
       expect(s.hooks).toEqual([
         { hook: "role", userId: id, from: null, to: "admin" },
@@ -780,17 +784,17 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
       );
       expect(await userRow(s, id)).toMatchObject({ role: "admin" });
       await s.request("DELETE", `/Groups/${g}`);
-      expect(await userRow(s, id)).toMatchObject({ source: "none" });
+      expect(await userRow(s, id)).toMatchObject({
+        role: null,
+        source: "scim",
+      });
     });
 
     it("leaves roles alone in claims mode", async () => {
       const s = await stack();
       const id = await create(s, "ada");
       await group(s, "posted-admins", [id]);
-      expect(await userRow(s, id)).toMatchObject({
-        role: "viewer",
-        source: "none",
-      });
+      expect(await userRow(s, id)).toMatchObject({ role: null, source: null });
       expect(s.hooks).toEqual([]);
     });
 
@@ -847,7 +851,10 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
           patchBody({ op: "remove", path: "members" }),
         );
         for (const id of ids)
-          expect(await userRow(s, id)).toMatchObject({ source: "none" });
+          expect(await userRow(s, id)).toMatchObject({
+            role: null,
+            source: "scim",
+          });
       }
     });
   });

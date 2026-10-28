@@ -77,7 +77,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           [id],
         );
         expect(row).toEqual({
-          role: "viewer",
+          role: null,
           active: true,
           fresh: true,
           deactivatedAt: null,
@@ -88,17 +88,12 @@ describe.skipIf(!databaseUrl).each(adapters)(
         );
       });
 
-      it("accepts only the three roles", async () => {
-        for (const role of ["viewer", "member", "admin"])
+      it("accepts the three roles, or NULL for no access", async () => {
+        for (const role of ["viewer", "member", "admin", null])
           await createUser({ role });
         await fails(
           `INSERT INTO ${t("users")} (iss, sub, role) VALUES ($1, 'x-owner', 'owner')`,
           [ISS],
-        );
-        await fails(
-          `INSERT INTO ${t("users")} (iss, sub, role) VALUES ($1, 'x-null', NULL)`,
-          [ISS],
-          /null value/,
         );
       });
 
@@ -294,22 +289,23 @@ describe.skipIf(!databaseUrl).each(adapters)(
     });
 
     describe("0002", () => {
-      it("records where a role came from, defaulting to none", async () => {
+      it("records where a role came from, NULL until something sets it", async () => {
         const id = await createUser();
         const [row] = await sql.query<{ source: string }>(
           `SELECT role_source AS "source" FROM ${t("users")} WHERE id = $1`,
           [id],
         );
-        expect(row?.source).toBe("none");
-        for (const source of ["oidc", "scim", "admin", "operator"])
+        expect(row?.source).toBeNull();
+        for (const source of ["oidc", "scim", "admin", "operator", null])
           await sql.query(
             `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
             [id, source],
           );
-        await fails(
-          `UPDATE ${t("users")} SET role_source = 'claims' WHERE id = $1`,
-          [id],
-        );
+        for (const source of ["claims", "none"])
+          await fails(
+            `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
+            [id, source],
+          );
       });
 
       it("keys logout token ids by issuer and refuses empty ones", async () => {

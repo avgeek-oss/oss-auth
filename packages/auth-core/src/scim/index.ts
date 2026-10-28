@@ -276,7 +276,10 @@ export function createScim(options: CreateScimOptions): Hono {
   ): Promise<void> {
     if (!scimRoles) return;
     for (const id of [...new Set(userIds)].sort()) {
-      const [user] = await db.query<{ role: Role; source: string }>(
+      const [user] = await db.query<{
+        role: Role | null;
+        source: string | null;
+      }>(
         `SELECT role, role_source AS "source" FROM ${users}
          WHERE id = $1 AND deleted_at IS NULL FOR NO KEY UPDATE`,
         [id],
@@ -294,18 +297,11 @@ export function createScim(options: CreateScimOptions): Hono {
       }
       const from = user.source === "scim" ? user.role : null;
       if (best === from) continue;
-      if (best === null) {
-        await db.query(
-          `UPDATE ${users} SET role_source = 'none' WHERE id = $1`,
-          [id],
-        );
-        await sessions.revokeAll(id, db);
-      } else {
-        await db.query(
-          `UPDATE ${users} SET role = $2, role_source = 'scim' WHERE id = $1`,
-          [id, best],
-        );
-      }
+      await db.query(
+        `UPDATE ${users} SET role = $2, role_source = 'scim' WHERE id = $1`,
+        [id, best],
+      );
+      if (best === null) await sessions.revokeAll(id, db);
       await hooks.onRoleChange?.(id, from, best, db);
     }
   }
@@ -532,8 +528,8 @@ export function createScim(options: CreateScimOptions): Hono {
       await assertUniqueUser(tx, fields, null);
       const [created] = await tx.query<ScimUserRow>(
         `INSERT INTO ${users} (iss, user_name, external_id, given_name, family_name,
-           display_name, email, active, deactivated_at, role_source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8 THEN NULL ELSE now() END, 'none')
+           display_name, email, active, deactivated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8 THEN NULL ELSE now() END)
          RETURNING ${USER_COLUMNS}`,
         [
           issuer,

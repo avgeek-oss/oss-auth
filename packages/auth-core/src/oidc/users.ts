@@ -3,8 +3,11 @@ import { quoteIdent } from "../identifiers.js";
 import type { SqlQueryable } from "../postgres/sql.js";
 import { resolveRole, type Role } from "../roles.js";
 
-/** Where a user's role came from. Stored in `users.role_source`. */
-export type RoleSource = "none" | "oidc" | "scim" | "admin" | "operator";
+/**
+ * Where a user's role was last set, including to `null`. Stored in
+ * `users.role_source`; `null` until something sets the role.
+ */
+export type RoleSource = "oidc" | "scim" | "admin" | "operator";
 
 /** Why an OIDC sign-in was refused after the provider authenticated it. */
 export type SignInDeniedReason =
@@ -17,8 +20,9 @@ export interface UserRecord {
   readonly sub: string | null;
   readonly email: string | null;
   readonly displayName: string | null;
-  readonly role: Role;
-  readonly roleSource: RoleSource;
+  /** `null` while the person has no access. */
+  readonly role: Role | null;
+  readonly roleSource: RoleSource | null;
   readonly active: boolean;
   readonly deletedAt: Date | null;
 }
@@ -27,7 +31,7 @@ export interface UserRecord {
 export type SignInOutcome =
   | {
       readonly kind: "allowed";
-      readonly user: UserRecord;
+      readonly user: UserRecord & { readonly role: Role };
       readonly created: boolean;
     }
   | {
@@ -56,8 +60,9 @@ function stringClaim(value: unknown, max: number): string | null {
  * - A deleted or deactivated user is refused, and `"none"` from
  *   {@link resolveRole} always refuses.
  * - With `<APP>_ROLE_SOURCE=claims` (the default), the role claim sets the
- *   role. A missing claim keeps the role of a user who has one, and refuses
- *   a new or never-assigned user: a role only ever comes from the provider.
+ *   role, and `"none"` sets it to `null` (no access). A missing claim keeps
+ *   the role of a user who has one, and refuses a user without one: a role
+ *   only ever comes from the provider.
  * - With `<APP>_ROLE_SOURCE=scim`, SCIM group membership sets the role and
  *   sign-in never changes it or creates users: a person SCIM has not
  *   provisioned and assigned is refused as `unassigned`.
@@ -123,7 +128,9 @@ export async function signInUser(
       [claims.iss, claims.sub, email, displayName, role, source],
     );
     if (created !== undefined)
-      return { kind: "allowed", user: created, created: true };
+      return hasRole(created)
+        ? { kind: "allowed", user: created, created: true }
+        : deny("no_role", created.id);
     // Another sign-in created the user first; continue as a returning user.
     existing = await select();
     if (existing === undefined)
@@ -132,36 +139,48 @@ export async function signInUser(
 
   if (existing.deletedAt !== null) return deny("user_deleted", existing.id);
   if (!existing.active) return deny("user_inactive", existing.id);
-  if (resolved === "none") return deny("no_role", existing.id);
 
   let role = existing.role;
   let source = existing.roleSource;
   if (scimRoles) {
-    if (existing.roleSource !== "scim") return deny("unassigned", existing.id);
+    if (resolved === "none") return deny("no_role", existing.id);
+    if (existing.roleSource !== "scim" || existing.role === null)
+      return deny("unassigned", existing.id);
+  } else if (resolved === "none") {
+    // The provider says this person has no role: record it, then refuse.
+    role = null;
+    source = "oidc";
   } else if (resolved !== null) {
     role = resolved;
     source = "oidc";
-  } else if (existing.roleSource === "none") {
-    // Provisioned but never given a role: treat like a new user.
+  } else if (existing.role === null) {
+    // No role and no claim to give one: treat like a new user.
     return deny("no_role", existing.id);
   }
 
+  let user = existing;
   if (
-    !linked &&
-    email === existing.email &&
-    displayName === existing.displayName &&
-    role === existing.role &&
-    source === existing.roleSource
-  )
-    return { kind: "allowed", user: existing, created: false };
+    linked ||
+    email !== existing.email ||
+    displayName !== existing.displayName ||
+    role !== existing.role ||
+    source !== existing.roleSource
+  ) {
+    const [updated] = await tx.query<UserRecord>(
+      `UPDATE ${users} SET sub = $6, email = coalesce($2, email),
+         display_name = coalesce($3, display_name), role = $4, role_source = $5
+       WHERE id = $1 RETURNING ${COLUMNS}`,
+      [existing.id, email, displayName, role, source, claims.sub],
+    );
+    if (updated === undefined)
+      throw new Error("The user vanished during sign-in.");
+    user = updated;
+  }
+  return hasRole(user)
+    ? { kind: "allowed", user, created: false }
+    : deny("no_role", user.id);
+}
 
-  const [updated] = await tx.query<UserRecord>(
-    `UPDATE ${users} SET sub = $6, email = coalesce($2, email),
-       display_name = coalesce($3, display_name), role = $4, role_source = $5
-     WHERE id = $1 RETURNING ${COLUMNS}`,
-    [existing.id, email, displayName, role, source, claims.sub],
-  );
-  if (updated === undefined)
-    throw new Error("The user vanished during sign-in.");
-  return { kind: "allowed", user: updated, created: false };
+function hasRole(user: UserRecord): user is UserRecord & { role: Role } {
+  return user.role !== null;
 }

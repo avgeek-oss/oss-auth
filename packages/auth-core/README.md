@@ -105,7 +105,7 @@ app.route(
 
 ### Where roles come from
 
-- **`<APP>_ROLE_SOURCE=claims`** (default). The role claim sets the role at each sign-in. SCIM manages users and stores groups but does not change roles.
+- **`<APP>_ROLE_SOURCE=claims`** (default). The role claim sets the role at each sign-in, and a claim that maps to nothing takes it away. SCIM manages users and stores groups but does not change roles.
 - **`<APP>_ROLE_SOURCE=scim`** (recommended with authentik). A user's role is the highest role their groups' display names map to through `<APP>_OIDC_ROLE_MAP` (ignoring case), recomputed on every membership change in the same transaction, and `hooks.onRoleChange` runs on every change. With no mapped group the user has no access: their sessions end and sign-in refuses them as `unassigned`. Sign-in never creates users or changes roles in this mode, but still refuses a role claim that maps to nothing.
 
 With `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT=true`, the first sign-in of a SCIM-provisioned user (no `sub` yet) links to them by issuer and `externalId = sub`. People are never linked by email.

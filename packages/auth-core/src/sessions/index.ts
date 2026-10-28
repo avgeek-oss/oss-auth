@@ -179,7 +179,7 @@ export function createSessions<Ext extends object = Record<never, never>>(
          FROM ${sessions} s JOIN ${users} u ON u.id = s.user_id
          WHERE s.id_hash = $2 AND s.revoked_at IS NULL
            AND s.expires_at > ${T} AND s.idle_expires_at > ${T}
-           AND u.active AND u.deleted_at IS NULL
+           AND u.active AND u.deleted_at IS NULL AND u.role IS NOT NULL
            AND ($3::boolean IS NOT TRUE OR u.role_source = 'scim')`,
         [now(), idHash, config.roleSource === "scim"],
       );
