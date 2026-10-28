@@ -2,17 +2,18 @@
 
 The server half of Avgeek OSS auth: sign-in through the organisation's OpenID provider, sessions, roles and the Postgres schema. See the [repository README](../../README.md) for the design and [ARCHITECTURE.md](../../ARCHITECTURE.md) for the contract apps implement.
 
-| Import                           | What it holds                                                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@avgeek-oss/auth-core`          | `loadAuthConfig`, `deriveKey` and `createKeyring`, tokens, the API key format, roles and `resolveRole`, `Actor`, errors with stable codes. |
-| `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
-| `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
-| `@avgeek-oss/auth-core/api-keys` | `createApiKeys`: personal API keys with a role ceiling. Issue, list, rotate, revoke, verify.                                               |
-| `@avgeek-oss/auth-core/mcp`      | `createMcpAuth`: the OAuth 2.1 authorization server for MCP clients and `requireMcpToken` for its resources.                               |
-| `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
-| `@avgeek-oss/auth-core/scim`     | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
-| `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
-| `@avgeek-oss/auth-core/testing`  | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                             |
+| Import                              | What it holds                                                                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@avgeek-oss/auth-core`             | `loadAuthConfig`, `deriveKey` and `createKeyring`, tokens, the API key format, roles and `resolveRole`, `Actor`, errors with stable codes. |
+| `@avgeek-oss/auth-core/postgres`    | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
+| `@avgeek-oss/auth-core/oidc`        | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
+| `@avgeek-oss/auth-core/api-keys`    | `createApiKeys`: personal API keys with a role ceiling. Issue, list, rotate, revoke, verify.                                               |
+| `@avgeek-oss/auth-core/mcp`         | `createMcpAuth`: the OAuth 2.1 authorization server for MCP clients and `requireMcpToken` for its resources.                               |
+| `@avgeek-oss/auth-core/rate-limits` | `createRateLimiter`, the default policies, and client IP resolution behind trusted proxies.                                                |
+| `@avgeek-oss/auth-core/sessions`    | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
+| `@avgeek-oss/auth-core/scim`        | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
+| `@avgeek-oss/auth-core/hono`        | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
+| `@avgeek-oss/auth-core/testing`     | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                             |
 
 Runtime dependencies: `zod`, `openid-client` and `jose` (which `openid-client` already uses). Optional peers: `hono` for `/hono`, `pg` or `postgres` for the adapter you use, and `oidc-provider` for `/testing`.
 
@@ -66,28 +67,30 @@ Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "st
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                            | Default                | Meaning                                                                                             |
-| ----------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------- |
-| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                         |
-| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                 |
-| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                 |
-| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                               |
-| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                            |
-| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                    |
-| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                     |
-| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.           |
-| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                   |
-| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.        |
-| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                               |
-| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                              |
-| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one. |
-| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                   |
-| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                       |
-| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                          |
-| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                              |
-| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                          |
-| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                   |
-| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                            |
+| Variable                            | Default                | Meaning                                                                                                |
+| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                            |
+| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                    |
+| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                    |
+| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                                  |
+| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                               |
+| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                       |
+| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                        |
+| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.              |
+| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                      |
+| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.           |
+| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                  |
+| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                                 |
+| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one.    |
+| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                      |
+| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                          |
+| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                             |
+| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                                 |
+| `<APP>_TRUSTED_PROXIES`             | unset                  | CIDRs of the proxies in front of the API, whose `X-Forwarded-For` or `Forwarded` headers are believed. |
+| `<APP>_RATE_LIMITS`                 | `{}`                   | Policies that replace the defaults, as JSON (see Rate limits).                                         |
+| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                             |
+| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                      |
+| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                               |
 
 ## API keys
 
@@ -160,6 +163,83 @@ app.get("/v1/boards", mcp.requireMcpToken({ resource: "/v1" }), listBoards);
 - **Housekeeping.** `mcp.purgeExpired()` deletes consent requests, codes and tokens that expired more than a day ago; run it from the app's scheduler.
 
 With authentik, nothing changes at the provider: people sign in to the app as before, and the app, not authentik, is the authorization server for its MCP clients.
+
+## Rate limits
+
+Every route auth-core serves without a session is rate limited, and so are a few with one. Limits live in Postgres (`0006_rate_limits.sql`), so every instance of the API shares them, and each policy can be changed by name with `<APP>_RATE_LIMITS`:
+
+```sh
+POSTED_RATE_LIMITS='{"oauth.token.ip":{"limit":300,"periodSeconds":60},"scim":{"limit":6000,"periodSeconds":60,"burst":1000}}'
+```
+
+| Policy                    | Applies to                                                         | Default       | Per              |
+| ------------------------- | ------------------------------------------------------------------ | ------------- | ---------------- |
+| `oidc`                    | `/auth/sign-in`, `/auth/callback` and `/auth/step-up`, together    | 30 a minute   | IP               |
+| `oidc.backchannel-logout` | `/auth/backchannel-logout`                                         | 60 a minute   | IP               |
+| `oauth.authorize`         | `/oauth/authorize`                                                 | 30 a minute   | IP               |
+| `oauth.metadata.ip`       | client metadata document fetches (cache misses only)               | 10 a minute   | IP               |
+| `oauth.metadata.host`     | client metadata document fetches (cache misses only)               | 20 a minute   | document host    |
+| `oauth.metadata.global`   | client metadata document fetches (cache misses only)               | 100 a minute  | the whole app    |
+| `oauth.token.ip`          | `/oauth/token`                                                     | 120 a minute  | IP               |
+| `oauth.token.client`      | `/oauth/token`                                                     | 60 a minute   | client id        |
+| `oauth.token.failures`    | `/oauth/token` answers of `invalid_grant` or `invalid_client` only | 10 a minute   | client id and IP |
+| `oauth.revoke`            | `/oauth/revoke`                                                    | 60 a minute   | IP               |
+| `oauth.register`          | legacy dynamic client registration, when on                        | 5 an hour     | IP               |
+| `oauth.consent`           | consent decisions (`POST /oauth/consent/:id`)                      | 30 a minute   | user             |
+| `api-keys.write`          | API key creation and rotation                                      | 30 a minute   | user             |
+| `bearer.invalid`          | invalid API keys, OAuth access tokens and SCIM tokens only         | 60 a minute   | IP               |
+| `scim`                    | every SCIM request                                                 | 3000 a minute | SCIM token       |
+
+- **Algorithm.** The generic cell rate algorithm: one timestamp per key, updated in a single `INSERT … ON CONFLICT DO UPDATE … RETURNING`, so concurrent requests never get more than the policy allows. A policy is `{ limit, periodSeconds, burst? }`: `limit` requests per period on average, and up to `burst` (default `limit`) at once. Keys are stored as HMAC-SHA256 under the `rate-limit` key, never as raw IPs, emails or client ids. Run `auth.rateLimiter.purgeExpired()` from the app's scheduler to delete emptied buckets.
+- **Failures only.** `oauth.token.failures` and `bearer.invalid` count only failed attempts, so a neighbour's bad keys never slow down valid ones: a valid API key, access token or SCIM token is never refused by `bearer.invalid`. Once a client id and IP reach `oauth.token.failures`, their token requests wait until it recovers.
+- **SCIM.** authentik's full sync rewrites every user and group every 10 minutes. A test provisions 500 users and 50 groups and then fully syncs them, 1,100 requests in one minute, within the default.
+- **Responses.** Over a limit: 429 with `Retry-After` (whole seconds) and `Cache-Control: no-store`. JSON routes answer `{ "error": { "code": "rate_limited", … } }`; `/oauth/token`, `/oauth/revoke` and `/oauth/register` the RFC 6749 shape with `error: "temporarily_unavailable"`; SCIM the RFC 7644 Error schema with `status: "429"`; and browser navigations (sign-in, callback, step-up and `/oauth/authorize`) a plain-text 429, never a redirect.
+- **Fail closed.** If the limiter's query fails, the request is refused with a 503 and a generic message in the same shapes, rather than let through unlimited. Every route that is limited needs the same database anyway.
+- **Your own routes.** `auth.middleware.rateLimit(name, key, { fallback, surface })` uses the same store: `key` is `"ip"` or a function of the context (return `null` to skip), and `fallback` is the policy when neither the defaults nor `<APP>_RATE_LIMITS` name it.
+
+  ```ts
+  app.post(
+    "/api/exports",
+    auth.middleware.rateLimit(
+      "posted.exports",
+      (c) => c.get("actor")?.user.id ?? null,
+      {
+        fallback: { limit: 5, periodSeconds: 3600 },
+      },
+    ),
+    startExport,
+  );
+  ```
+
+### Client IPs and trusted proxies
+
+The client's IP is the socket's peer address (from `@hono/node-server`; on other runtimes pass `getClientIp` to `createAuth`). `X-Forwarded-For` and `Forwarded` are believed only when that peer is in `<APP>_TRUSTED_PROXIES`, and then only from the right: trusted hops are skipped, and the first untrusted address is the client, so a client cannot choose its own address by sending the header. Per-IP limits key on the address for IPv4 and on the /64 for IPv6, since one host usually holds a whole /64. With no trusted proxies, the default, the headers are ignored.
+
+With Caddy on the same host, `reverse_proxy` sets `X-Forwarded-For` to the client's address:
+
+```caddyfile
+api.posted.example.com {
+	reverse_proxy 127.0.0.1:8787
+}
+```
+
+```sh
+POSTED_TRUSTED_PROXIES=127.0.0.1/32,::1/128
+```
+
+With nginx, append the peer address to the chain, and trust nginx's address (and any load balancer in front of it):
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+```sh
+POSTED_TRUSTED_PROXIES=127.0.0.1/32,10.0.0.0/8
+```
 
 ## SCIM
 
