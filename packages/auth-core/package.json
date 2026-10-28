@@ -27,42 +27,42 @@
   ],
   "exports": {
     ".": {
-      "source": "./src/index.ts",
+      "@avgeek-oss/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
     "./postgres": {
-      "source": "./src/postgres/index.ts",
+      "@avgeek-oss/source": "./src/postgres/index.ts",
       "types": "./dist/postgres/index.d.ts",
       "import": "./dist/postgres/index.js"
     },
     "./oidc": {
-      "source": "./src/oidc/index.ts",
+      "@avgeek-oss/source": "./src/oidc/index.ts",
       "types": "./dist/oidc/index.d.ts",
       "import": "./dist/oidc/index.js"
     },
     "./api-keys": {
-      "source": "./src/api-keys/index.ts",
+      "@avgeek-oss/source": "./src/api-keys/index.ts",
       "types": "./dist/api-keys/index.d.ts",
       "import": "./dist/api-keys/index.js"
     },
     "./sessions": {
-      "source": "./src/sessions/index.ts",
+      "@avgeek-oss/source": "./src/sessions/index.ts",
       "types": "./dist/sessions/index.d.ts",
       "import": "./dist/sessions/index.js"
     },
     "./hono": {
-      "source": "./src/hono/index.ts",
+      "@avgeek-oss/source": "./src/hono/index.ts",
       "types": "./dist/hono/index.d.ts",
       "import": "./dist/hono/index.js"
     },
     "./scim": {
-      "source": "./src/scim/index.ts",
+      "@avgeek-oss/source": "./src/scim/index.ts",
       "types": "./dist/scim/index.d.ts",
       "import": "./dist/scim/index.js"
     },
     "./testing": {
-      "source": "./src/testing/index.ts",
+      "@avgeek-oss/source": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
     }
