@@ -1,4 +1,4 @@
--- Core auth tables: users, sessions and the audit log.
+-- Core auth tables: users and sessions.
 --
 -- The migration runner sets search_path to the auth schema for this
 -- transaction, so names here are unqualified. Functions pin their own
@@ -157,48 +157,3 @@ $$;
 CREATE TRIGGER sessions_before_update
 BEFORE UPDATE ON sessions
 FOR EACH ROW EXECUTE FUNCTION sessions_before_update();
-
--- Audit log ---------------------------------------------------------------
-
--- One row per AuditEvent. Rows outlive the users they mention, so user ids
--- carry no foreign key. Rows are never updated; old rows may be deleted for
--- retention.
-CREATE TABLE audit_events (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  occurred_at timestamptz NOT NULL DEFAULT now(),
-  type text NOT NULL CHECK (type ~ '^[a-z][a-z_]*(\.[a-z][a-z_]*)+$'),
-  actor_type text NOT NULL CHECK (actor_type IN ('user', 'idp', 'operator', 'system')),
-  actor_user_id uuid,
-  actor_issuer text CHECK (actor_issuer <> ''),
-  credential_kind text CHECK (credential_kind IN ('session', 'api_key', 'oauth')),
-  credential_id text CHECK (credential_id <> ''),
-  subject_user_id uuid,
-  ip inet,
-  user_agent text CHECK (length(user_agent) <= 512),
-  data jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(data) = 'object'),
-  CONSTRAINT audit_events_user_actor CHECK ((actor_type = 'user') = (actor_user_id IS NOT NULL)),
-  CONSTRAINT audit_events_idp_actor CHECK ((actor_type = 'idp') = (actor_issuer IS NOT NULL)),
-  CONSTRAINT audit_events_credential CHECK (
-    (credential_kind IS NULL) = (credential_id IS NULL)
-    AND (credential_kind IS NULL OR actor_type = 'user')
-  )
-);
-
-CREATE INDEX audit_events_occurred_at_idx ON audit_events (occurred_at);
-CREATE INDEX audit_events_subject_idx ON audit_events (subject_user_id, occurred_at)
-  WHERE subject_user_id IS NOT NULL;
-CREATE INDEX audit_events_actor_idx ON audit_events (actor_user_id, occurred_at)
-  WHERE actor_user_id IS NOT NULL;
-
-CREATE FUNCTION audit_events_before_update() RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $$
-BEGIN
-  RAISE EXCEPTION 'audit events are append-only' USING ERRCODE = 'check_violation';
-END
-$$;
-
-CREATE TRIGGER audit_events_before_update
-BEFORE UPDATE ON audit_events
-FOR EACH ROW EXECUTE FUNCTION audit_events_before_update();

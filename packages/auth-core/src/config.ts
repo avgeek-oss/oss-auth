@@ -29,6 +29,11 @@ export interface AuthConfig {
     readonly clientSecret: string;
     /** `<APP>_OIDC_ROLE_CLAIMS` and `<APP>_OIDC_ROLE_MAP`. */
     readonly roleMap: RoleMap;
+    /**
+     * `<APP>_OIDC_SCOPES`: scopes requested at sign-in. Always includes
+     * `openid`. authentik needs `entitlements` for its `roles` claim.
+     */
+    readonly scopes: readonly string[];
   };
   readonly scim: {
     /**
@@ -225,6 +230,26 @@ const fields = z
           Record<string, Role>
         >;
       }),
+    OIDC_SCOPES: z
+      .string(required("a space-separated list of scopes"))
+      .default("openid email profile")
+      .transform((value, ctx) => {
+        const scopes = [
+          ...new Set(value.split(/[\s,]+/).filter((s) => s !== "")),
+        ];
+        if (
+          !scopes.includes("openid") ||
+          scopes.some((s) => !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(s))
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            message:
+              'must be space-separated scopes including openid, such as "openid email profile entitlements"',
+          });
+          return z.NEVER;
+        }
+        return scopes;
+      }),
     SCIM_TOKENS: z
       .string(required("a comma-separated list of bearer tokens"))
       .default("")
@@ -349,6 +374,7 @@ export function loadAuthConfig(
         claims: Object.freeze(v.OIDC_ROLE_CLAIMS),
         values: v.OIDC_ROLE_MAP,
       }),
+      scopes: Object.freeze(v.OIDC_SCOPES),
     },
     scim: Object.freeze({ tokens: Object.freeze(v.SCIM_TOKENS) }),
     origins: Object.freeze({ web: v.WEB_ORIGIN, api: v.API_ORIGIN }),

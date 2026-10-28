@@ -4,10 +4,14 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 
 | Package                                       | Runs in | What it does                                                                                      |
 | --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles, actors and audit events.        |
+| [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles and actors.                      |
 | `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
+| `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
+| `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
+| `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
+| `@avgeek-oss/auth-core/testing`               | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                   |
 
-Sessions and OIDC, SCIM, API keys, the MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+SCIM, API keys, the MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 
@@ -30,6 +34,7 @@ POSTED_OIDC_CLIENT_SECRET=...
 POSTED_WEB_ORIGIN=https://posted.example.com
 POSTED_API_ORIGIN=https://api.posted.example.com
 # Optional, with their defaults:
+POSTED_OIDC_SCOPES="openid email profile"
 POSTED_OIDC_ROLE_CLAIMS=roles
 POSTED_OIDC_ROLE_MAP='{"viewer":"viewer","member":"member","admin":"admin"}'
 POSTED_SCIM_TOKENS=
@@ -38,15 +43,24 @@ POSTED_SESSION_IDLE_TIMEOUT=2h
 POSTED_AUTH_SCHEMA=auth
 ```
 
-Then load the configuration and migrate the auth schema from the app's migrate step:
+Then load the configuration, migrate the auth schema from the app's migrate step, and mount the routes:
 
 ```ts
 import { loadAuthConfig } from "@avgeek-oss/auth-core";
+import { createAuth } from "@avgeek-oss/auth-core/hono";
 import { fromPostgresJs, migrate } from "@avgeek-oss/auth-core/postgres";
 
 const config = loadAuthConfig("posted", process.env);
-await migrate(fromPostgresJs(sql), { schema: config.schema });
+const db = fromPostgresJs(sql);
+await migrate(db, { schema: config.schema });
+
+const auth = createAuth({ config, sql: db });
+app.route("/auth", auth.routes);
+app.use("/api/*", auth.middleware.actor, auth.middleware.trustedOrigin);
+app.post("/api/members", auth.middleware.requireRole("admin"), addMember);
 ```
+
+The [package README](packages/auth-core/README.md) lists the routes, every variable and an authentik setup.
 
 `loadAuthConfig` throws one error that lists every invalid variable by name. The auth tables live in their own schema, so they never collide with the app's tables.
 
@@ -58,7 +72,10 @@ The packages require Node 26 or later, the version every avgeek-oss app runs on 
 pnpm install
 pnpm verify          # format, lint, typecheck, test, build
 pnpm test:watch
+DATABASE_URL=postgres://... pnpm dev:example   # the reference app on http://localhost:5173
 ```
+
+[`examples/hono-vite`](examples/hono-vite) is a Hono API and a Vite page using `createAuth`, signing in through the mock provider in `@avgeek-oss/auth-core/testing`.
 
 The Postgres suites run when `AUTH_TEST_DATABASE_URL` points at a disposable database; without it they are skipped. CI runs them against Postgres 18, and they also pass on Postgres 16. To run them locally:
 

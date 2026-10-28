@@ -10,6 +10,18 @@ export const AUTH_ERROR_CODES = [
   "migration_invalid",
   "migration_modified",
   "migration_unknown",
+  "unauthenticated",
+  "forbidden",
+  "step_up_required",
+  "step_up_failed",
+  "origin_invalid",
+  "csrf_header_missing",
+  "return_to_invalid",
+  "oidc_unavailable",
+  "oidc_transaction_invalid",
+  "oidc_callback_invalid",
+  "sign_in_denied",
+  "logout_token_invalid",
 ] as const;
 
 /** One of {@link AUTH_ERROR_CODES}. */
@@ -108,6 +120,61 @@ export class MigrationError extends AuthError {
   ) {
     super(code, message);
     this.migration = migration;
+  }
+}
+
+/** The codes {@link AuthRequestError} carries. */
+export type AuthRequestErrorCode = Extract<
+  AuthErrorCode,
+  | "unauthenticated"
+  | "forbidden"
+  | "step_up_required"
+  | "step_up_failed"
+  | "origin_invalid"
+  | "csrf_header_missing"
+  | "return_to_invalid"
+  | "oidc_unavailable"
+  | "oidc_transaction_invalid"
+  | "oidc_callback_invalid"
+  | "sign_in_denied"
+  | "logout_token_invalid"
+>;
+
+const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
+  unauthenticated: 401,
+  forbidden: 403,
+  step_up_required: 401,
+  step_up_failed: 403,
+  origin_invalid: 403,
+  csrf_header_missing: 403,
+  return_to_invalid: 400,
+  oidc_unavailable: 503,
+  oidc_transaction_invalid: 400,
+  oidc_callback_invalid: 400,
+  sign_in_denied: 403,
+  logout_token_invalid: 400,
+};
+
+/**
+ * A request failed for a reason the caller can act on. `status` is the HTTP
+ * status to answer with, and `reason` a finer, stable detail for logs and
+ * tests (such as `state` or `mfa_missing`). The message is safe to show.
+ */
+export class AuthRequestError extends AuthError {
+  declare readonly code: AuthRequestErrorCode;
+  /** The HTTP status for this code. */
+  readonly status: number;
+  /** A stable detail within the code, or `null`. */
+  readonly reason: string | null;
+
+  constructor(
+    code: AuthRequestErrorCode,
+    message: string,
+    options: ErrorOptions & { reason?: string } = {},
+  ) {
+    super(code, message, options);
+    this.status = REQUEST_ERROR_STATUS[code];
+    this.reason = options.reason ?? null;
   }
 }
 

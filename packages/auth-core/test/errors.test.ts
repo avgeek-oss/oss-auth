@@ -4,6 +4,7 @@ import {
   AUTH_ERROR_CODES,
   AuthConfigError,
   AuthError,
+  AuthRequestError,
   InvalidApiKeyError,
   isAuthError,
   MigrationError,
@@ -81,6 +82,38 @@ describe("errors", () => {
     expect(isAuthError({ code: "config_invalid" })).toBe(false);
     expect(isAuthError(null)).toBe(false);
     expect(isAuthError("config_invalid")).toBe(false);
+  });
+});
+
+describe("AuthRequestError", () => {
+  it("maps each code to its HTTP status and keeps the reason", () => {
+    const statuses = {
+      unauthenticated: 401,
+      forbidden: 403,
+      step_up_required: 401,
+      step_up_failed: 403,
+      origin_invalid: 403,
+      csrf_header_missing: 403,
+      return_to_invalid: 400,
+      oidc_unavailable: 503,
+      oidc_transaction_invalid: 400,
+      oidc_callback_invalid: 400,
+      sign_in_denied: 403,
+      logout_token_invalid: 400,
+    } as const;
+    for (const [code, status] of Object.entries(statuses)) {
+      const error = new AuthRequestError(code as keyof typeof statuses, "m");
+      expect(error).toBeInstanceOf(AuthError);
+      expect(error.status).toBe(status);
+      expect(error.reason).toBeNull();
+      expect(AUTH_ERROR_CODES).toContain(code);
+    }
+    const withReason = new AuthRequestError("oidc_callback_invalid", "m", {
+      reason: "state",
+      cause: new Error("inner"),
+    });
+    expect(withReason.reason).toBe("state");
+    expect((withReason.cause as Error).message).toBe("inner");
   });
 });
 

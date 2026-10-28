@@ -7,7 +7,6 @@ export {
   type PostgresJsLike,
   type PostgresJsQueryLike,
 } from "./adapters.js";
-export { insertAuditEvent, MAX_USER_AGENT_LENGTH } from "./audit.js";
 export {
   DEFAULT_AUTH_SCHEMA,
   loadMigrations,

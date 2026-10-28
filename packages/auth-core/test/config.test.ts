@@ -45,6 +45,7 @@ describe("loadAuthConfig", () => {
         clientId: "posted",
         clientSecret: "client-secret",
         roleMap: { claims: ["roles"], values: DEFAULT_ROLE_MAP_VALUES },
+        scopes: ["openid", "email", "profile"],
       },
       scim: { tokens: [] },
       origins: {
@@ -242,6 +243,28 @@ describe("loadAuthConfig", () => {
       ])
         expect(variables({ ...base, POSTED_OIDC_ROLE_MAP: map })).toEqual([
           "POSTED_OIDC_ROLE_MAP",
+        ]);
+    });
+  });
+
+  describe("scopes", () => {
+    it("reads space- or comma-separated scopes without repeats", () => {
+      expect(
+        loadAuthConfig("posted", {
+          ...base,
+          POSTED_OIDC_SCOPES: "openid  email,profile entitlements openid",
+        }).oidc.scopes,
+      ).toEqual(["openid", "email", "profile", "entitlements"]);
+    });
+
+    it("requires openid and valid scope characters", () => {
+      for (const scopes of [
+        "email profile",
+        'openid ema"il',
+        "openid caf\u00e9",
+      ])
+        expect(variables({ ...base, POSTED_OIDC_SCOPES: scopes })).toEqual([
+          "POSTED_OIDC_SCOPES",
         ]);
     });
   });

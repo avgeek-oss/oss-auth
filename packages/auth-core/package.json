@@ -1,7 +1,7 @@
 {
   "name": "@avgeek-oss/auth-core",
   "version": "0.1.0",
-  "description": "Server-side auth foundation for Avgeek OSS apps: configuration, key derivation, tokens, API key format, roles, audit events and the Postgres schema.",
+  "description": "Server-side auth for Avgeek OSS apps: configuration, OIDC sign-in, sessions, the Hono integration, roles and the Postgres schema.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -35,6 +35,26 @@
       "source": "./src/postgres/index.ts",
       "types": "./dist/postgres/index.d.ts",
       "import": "./dist/postgres/index.js"
+    },
+    "./oidc": {
+      "source": "./src/oidc/index.ts",
+      "types": "./dist/oidc/index.d.ts",
+      "import": "./dist/oidc/index.js"
+    },
+    "./sessions": {
+      "source": "./src/sessions/index.ts",
+      "types": "./dist/sessions/index.d.ts",
+      "import": "./dist/sessions/index.js"
+    },
+    "./hono": {
+      "source": "./src/hono/index.ts",
+      "types": "./dist/hono/index.d.ts",
+      "import": "./dist/hono/index.js"
+    },
+    "./testing": {
+      "source": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
     }
   },
   "publishConfig": {
@@ -46,13 +66,23 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "jose": "6.2.13",
+    "openid-client": "6.8.8",
     "zod": "^4.6.7"
   },
   "peerDependencies": {
+    "hono": "^4.13.0",
+    "oidc-provider": "^9.13.1",
     "pg": "^8.16.0",
     "postgres": "^3.4.0"
   },
   "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    },
+    "oidc-provider": {
+      "optional": true
+    },
     "pg": {
       "optional": true
     },
@@ -61,6 +91,9 @@
     }
   },
   "devDependencies": {
+    "@hono/node-server": "2.1.5",
+    "hono": "4.13.14",
+    "oidc-provider": "9.13.1",
     "pg": "^8.23.1",
     "postgres": "^3.4.9"
   }

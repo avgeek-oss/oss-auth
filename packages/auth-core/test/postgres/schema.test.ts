@@ -1,17 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  deriveKey,
-  generateToken,
-  hashToken,
-  type AuditEvent,
-} from "../../src/index.js";
-import {
-  insertAuditEvent,
-  MAX_USER_AGENT_LENGTH,
-  migrate,
-  quoteIdent,
-  type Sql,
-} from "../../src/postgres/index.js";
+import { deriveKey, generateToken, hashToken } from "../../src/index.js";
+import { migrate, quoteIdent, type Sql } from "../../src/postgres/index.js";
 import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
 
 const ISS = "https://auth.example.com/application/o/posted/";
@@ -242,6 +231,59 @@ describe.skipIf(!databaseUrl).each(adapters)(
       });
     });
 
+    describe("0002", () => {
+      it("records where a role came from, defaulting to none", async () => {
+        const id = await createUser();
+        const [row] = await sql.query<{ source: string }>(
+          `SELECT role_source AS "source" FROM ${t("users")} WHERE id = $1`,
+          [id],
+        );
+        expect(row?.source).toBe("none");
+        for (const source of ["oidc", "scim", "admin", "operator"])
+          await sql.query(
+            `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
+            [id, source],
+          );
+        await fails(
+          `UPDATE ${t("users")} SET role_source = 'claims' WHERE id = $1`,
+          [id],
+        );
+      });
+
+      it("keys logout token ids by issuer and refuses empty ones", async () => {
+        const insert = (iss: string, jti: string) =>
+          sql.query(
+            `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, $2, now())`,
+            [iss, jti],
+          );
+        await insert(ISS, "j1");
+        await insert("https://other.example", "j1");
+        await expect(insert(ISS, "j1")).rejects.toThrow(/duplicate key/);
+        await fails(
+          `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, '', now())`,
+          [ISS],
+        );
+        await fails(
+          `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, $2, now())`,
+          [ISS, "x".repeat(256)],
+        );
+      });
+
+      it("indexes sessions by user and revocation", async () => {
+        const [row] = await sql.query<{ names: string[] }>(
+          `SELECT array_agg(indexname::text ORDER BY indexname) AS "names" FROM pg_indexes
+         WHERE schemaname = $1 AND tablename = 'sessions'`,
+          [schema],
+        );
+        expect(row?.names).toEqual([
+          "sessions_expires_at_idx",
+          "sessions_pkey",
+          "sessions_provider_sid_idx",
+          "sessions_user_id_revoked_at_idx",
+        ]);
+      });
+    });
+
     describe("sessions", () => {
       it("stores a hashed id with the provider's details", async () => {
         const userId = await createUser();
@@ -382,211 +424,6 @@ describe.skipIf(!databaseUrl).each(adapters)(
             idHash,
           ]),
         ).toEqual([]);
-      });
-    });
-
-    describe("audit events", () => {
-      const read = async (id: string) =>
-        (
-          await sql.query(
-            `SELECT type, actor_type AS "actorType", actor_user_id AS "actorUserId", actor_issuer AS "actorIssuer",
-                  credential_kind AS "credentialKind", credential_id AS "credentialId",
-                  subject_user_id AS "subjectUserId", host(ip) AS "ip", user_agent AS "userAgent", data,
-                  occurred_at AS "occurredAt"
-           FROM ${t("audit_events")} WHERE id = $1::bigint`,
-            [id],
-          )
-        )[0];
-
-      it("records a user's action with the credential used", async () => {
-        const userId = await createUser();
-        const event: AuditEvent = {
-          type: "session.created",
-          actor: {
-            type: "user",
-            userId,
-            credential: { kind: "session", id: "f".repeat(64) },
-          },
-          subjectUserId: userId,
-          data: { amr: ["mfa"] },
-          context: { ip: "2001:db8::1", userAgent: "Firefox" },
-        };
-        const id = await insertAuditEvent(sql, event, { schema });
-        expect(id).toMatch(/^\d+$/);
-        expect(await read(id)).toMatchObject({
-          type: "session.created",
-          actorType: "user",
-          actorUserId: userId,
-          actorIssuer: null,
-          credentialKind: "session",
-          credentialId: "f".repeat(64),
-          subjectUserId: userId,
-          ip: "2001:db8::1",
-          userAgent: "Firefox",
-          data: { amr: ["mfa"] },
-        });
-      });
-
-      it("records provider, operator and system actors", async () => {
-        const subject = await createUser();
-        const at = new Date("2026-10-28T09:30:00.000Z");
-        const id = await insertAuditEvent(
-          sql,
-          {
-            type: "user.role_changed",
-            actor: { type: "idp", issuer: ISS },
-            subjectUserId: subject,
-            data: { source: "scim", from: "member", to: "admin" },
-            occurredAt: at,
-          },
-          { schema },
-        );
-        expect(await read(id)).toMatchObject({
-          actorType: "idp",
-          actorIssuer: ISS,
-          actorUserId: null,
-          credentialKind: null,
-          ip: null,
-          occurredAt: at,
-          data: { source: "scim", from: "member", to: "admin" },
-        });
-        const operator = await insertAuditEvent(
-          sql,
-          {
-            type: "session.revoked",
-            actor: { type: "operator" },
-            subjectUserId: subject,
-            data: { reason: "operator" },
-          },
-          { schema },
-        );
-        expect((await read(operator))?.actorType).toBe("operator");
-        const system = await insertAuditEvent(
-          sql,
-          {
-            type: "sign_in.denied",
-            actor: { type: "system" },
-            subjectUserId: null,
-            data: { reason: "no_role" },
-          },
-          { schema },
-        );
-        expect(await read(system)).toMatchObject({
-          actorType: "system",
-          subjectUserId: null,
-        });
-        expect(BigInt(system)).toBeGreaterThan(BigInt(operator));
-      });
-
-      it("cuts long user agents by character", async () => {
-        const userAgent = "🛫".repeat(MAX_USER_AGENT_LENGTH + 10);
-        const id = await insertAuditEvent(
-          sql,
-          {
-            type: "sign_in.denied",
-            actor: { type: "system" },
-            subjectUserId: null,
-            data: { reason: "unknown_user" },
-            context: { ip: null, userAgent },
-          },
-          { schema },
-        );
-        expect((await read(id))?.userAgent).toBe(
-          "🛫".repeat(MAX_USER_AGENT_LENGTH),
-        );
-      });
-
-      it("rejects unknown types and malformed addresses", async () => {
-        await expect(
-          insertAuditEvent(
-            sql,
-            {
-              type: "user.exploded",
-              actor: { type: "system" },
-              subjectUserId: null,
-              data: {},
-            } as unknown as AuditEvent,
-            { schema },
-          ),
-        ).rejects.toThrow(TypeError);
-        await expect(
-          insertAuditEvent(
-            sql,
-            {
-              type: "sign_in.denied",
-              actor: { type: "system" },
-              subjectUserId: null,
-              data: { reason: "no_role" },
-              context: { ip: "not an address", userAgent: null },
-            },
-            { schema },
-          ),
-        ).rejects.toThrow(/inet/);
-      });
-
-      it("enforces actor consistency in the table itself", async () => {
-        const userId = await createUser();
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('user.created', 'user')`,
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type, actor_user_id) VALUES ('user.created', 'system', $1)`,
-          [userId],
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('user.created', 'idp')`,
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type, credential_kind, credential_id) VALUES ('user.created', 'system', 'session', 'x')`,
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type, actor_user_id, credential_kind) VALUES ('user.created', 'user', $1, 'api_key')`,
-          [userId],
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('Created', 'system')`,
-        );
-        await fails(
-          `INSERT INTO ${t("audit_events")} (type, actor_type, data) VALUES ('user.created', 'system', '[]')`,
-        );
-      });
-
-      it("never updates a row but allows deleting old ones", async () => {
-        const id = await insertAuditEvent(
-          sql,
-          {
-            type: "sign_in.denied",
-            actor: { type: "system" },
-            subjectUserId: null,
-            data: { reason: "no_role" },
-          },
-          { schema },
-        );
-        await fails(
-          `UPDATE ${t("audit_events")} SET data = '{}' WHERE id = $1::bigint`,
-          [id],
-          /append-only/,
-        );
-        await sql.query(
-          `DELETE FROM ${t("audit_events")} WHERE id = $1::bigint`,
-          [id],
-        );
-        expect(await read(id)).toBeUndefined();
-      });
-
-      it("refuses an invalid schema name", async () => {
-        await expect(
-          insertAuditEvent(
-            sql,
-            {
-              type: "sign_in.denied",
-              actor: { type: "system" },
-              subjectUserId: null,
-              data: { reason: "no_role" },
-            },
-            { schema: "pg_catalog" },
-          ),
-        ).rejects.toThrow(TypeError);
       });
     });
   },
