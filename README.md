@@ -7,12 +7,13 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles and actors.                      |
 | `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
 | `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
+| `@avgeek-oss/auth-core/api-keys`              | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                    |
 | `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
 | `@avgeek-oss/auth-core/scim`                  | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                       |
 | `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
 | `@avgeek-oss/auth-core/testing`               | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                   |
 
-API keys, the MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+The MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 
@@ -21,7 +22,7 @@ The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https:/
 1. The identity provider decides who may use each app. The reference setup is authentik 2026.8 with Google as the login; any OIDC provider with SCIM works.
 2. A person signs in to the app's API with OIDC. The app keys them by issuer and subject, never by email, and reads their role from the token's `roles` or `groups` claim.
 3. The provider pushes changes over SCIM: new people, role changes, deactivation. Deactivating a person ends their sessions in the same transaction.
-4. API keys and MCP grants carry a role ceiling. A request acts with the lower of the ceiling and the person's current role, so demoting someone demotes their keys too.
+4. API keys and MCP grants carry a role ceiling. A request acts with the lower of the ceiling and the person's current role, and lowering someone's role revokes their keys above it. Deactivating them revokes all of their keys.
 
 ## Add it to an app
 
@@ -39,6 +40,9 @@ POSTED_OIDC_SCOPES="openid email profile"
 POSTED_OIDC_ROLE_CLAIMS=roles
 POSTED_OIDC_ROLE_MAP='{"viewer":"viewer","member":"member","admin":"admin"}'
 POSTED_SCIM_TOKENS=
+POSTED_API_KEY_PREFIX=posted
+POSTED_API_KEY_MAX_TTL_DAYS=365
+POSTED_API_KEY_ALLOW_NO_EXPIRY=false
 POSTED_SESSION_MAX_AGE=12h
 POSTED_SESSION_IDLE_TIMEOUT=2h
 POSTED_AUTH_SCHEMA=auth

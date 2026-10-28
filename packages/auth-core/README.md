@@ -7,6 +7,7 @@ The server half of Avgeek OSS auth: sign-in through the organisation's OpenID pr
 | `@avgeek-oss/auth-core`          | `loadAuthConfig`, `deriveKey` and `createKeyring`, tokens, the API key format, roles and `resolveRole`, `Actor`, errors with stable codes. |
 | `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
 | `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
+| `@avgeek-oss/auth-core/api-keys` | `createApiKeys`: personal API keys with a role ceiling. Issue, list, rotate, revoke, verify.                                               |
 | `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
 | `@avgeek-oss/auth-core/scim`     | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
 | `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
@@ -45,14 +46,18 @@ app.delete(
 
 The routes, under `/auth` on the API origin:
 
-| Route                      | What it does                                                                                                     |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `GET /sign-in?returnTo=`   | Redirects to the provider. `returnTo` must be a path on the web origin.                                          |
-| `GET /callback`            | Finishes sign-in or step-up and redirects to `returnTo`; on failure, to the web origin with `auth_error=<code>`. |
-| `POST /sign-out`           | Ends the session and returns `{ endSessionUrl }`, the provider's logout URL or `null`.                           |
-| `GET /session`             | The current user, role and session, or 401.                                                                      |
-| `GET /step-up?returnTo=`   | Re-authenticates at the provider with `prompt=login`.                                                            |
-| `POST /backchannel-logout` | Receives the provider's logout tokens.                                                                           |
+| Route                       | What it does                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `GET /sign-in?returnTo=`    | Redirects to the provider. `returnTo` must be a path on the web origin.                                          |
+| `GET /callback`             | Finishes sign-in or step-up and redirects to `returnTo`; on failure, to the web origin with `auth_error=<code>`. |
+| `POST /sign-out`            | Ends the session and returns `{ endSessionUrl }`, the provider's logout URL or `null`.                           |
+| `GET /session`              | The current user, role and session, or 401.                                                                      |
+| `GET /step-up?returnTo=`    | Re-authenticates at the provider with `prompt=login`.                                                            |
+| `POST /backchannel-logout`  | Receives the provider's logout tokens.                                                                           |
+| `GET /api-keys?user=`       | The caller's usable keys; an admin may name another user.                                                        |
+| `POST /api-keys`            | Creates a key from `{ name, ceiling, workspace?, expiresInSeconds? }` and returns it once.                       |
+| `POST /api-keys/:id/rotate` | Replaces one of the caller's keys; `{ graceSeconds }` keeps the old one working that long.                       |
+| `DELETE /api-keys/:id`      | Revokes one of the caller's keys, or anyone's for an admin.                                                      |
 
 Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "stepUpUrl": "…" } }`. The browser sends `X-Requested-With` on every state-changing request; `trustedOrigin` refuses it otherwise, and refuses any `Origin` but the web origin.
 
@@ -60,23 +65,54 @@ Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "st
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                            | Default                | Meaning                                                                                      |
-| ----------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
-| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                  |
-| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                          |
-| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                          |
-| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                        |
-| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                     |
-| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                             |
-| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.              |
-| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.    |
-| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.            |
-| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`. |
-| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                        |
-| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                       |
-| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                   |
-| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                            |
-| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                     |
+| Variable                            | Default                | Meaning                                                                                             |
+| ----------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------- |
+| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                         |
+| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                 |
+| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                 |
+| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                               |
+| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                            |
+| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                    |
+| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                     |
+| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.           |
+| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                   |
+| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.        |
+| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                               |
+| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                              |
+| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one. |
+| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                   |
+| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                       |
+| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                          |
+| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                   |
+| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                            |
+
+## API keys
+
+People create personal API keys from a signed-in session, for scripts and CI. A key looks like `posted_<id>_<secret>_<checksum>`; it is shown once, and only its HMAC under the `api-key` key is stored.
+
+```sh
+curl -H "Authorization: Bearer $POSTED_API_KEY" https://api.posted.example.com/api/boards
+```
+
+- **Authentication.** `actor` accepts `Authorization: Bearer <key>` and nothing else: never a query parameter or a cookie. A request with a bearer header is authenticated by the key alone, and its session cookie is ignored. The actor's credential is `{ kind: "api_key", id, ceiling, workspace }`.
+- **Roles.** A key acts with the lower of its ceiling and its owner's current role, so `requireRole` treats keys and sessions alike. A key cannot be created with a ceiling above the owner's role. When the owner's role is lowered, by SCIM, a sign-in claim or the app, a database trigger revokes their keys above the new role in the same transaction, and every key when the role becomes NULL. Deactivating or deleting the owner revokes all of their keys. Raising the role again does not restore them.
+- **Step-up and CSRF.** `requireRecentAuth` answers 403 `step_up_unavailable` for a key: sensitive actions need a session. `trustedOrigin` skips requests with a bearer header, since a cross-site page cannot send one and cookies are ignored for them.
+- **Managing keys** needs a session; a key cannot list, create, rotate or revoke keys. Creating or rotating an `admin` key needs a sign-in within the last 10 minutes, so the routes answer `step_up_required` as `requireRecentAuth(600)` does.
+- **Lifetime.** Keys expire after `<APP>_API_KEY_MAX_TTL_DAYS` unless created with less; `expiresInSeconds: null` needs `<APP>_API_KEY_ALLOW_NO_EXPIRY=true`. Rotation issues a new key with the same name, ceiling, workspace and lifetime, and the old key keeps working for `graceSeconds` (up to seven days). Of two concurrent rotations of one key, one wins and the other answers 409 `conflict`. `last_used_at` is recorded at most once a minute.
+- **Workspaces.** A key may carry an app-defined `workspace`. auth-core stores and returns it but never interprets it: the app must check `actor.credential.workspace` on every request. Creating a key for a workspace calls `hooks.authorizeWorkspace(actor, workspace)` on `createAuth`; without that hook, keys cannot have a workspace.
+
+```ts
+const auth = createAuth({
+  config,
+  sql,
+  hooks: {
+    authorizeWorkspace: (actor, workspace) =>
+      isMember(actor.user.id, workspace),
+  },
+});
+```
+
+`createApiKeys({ config, sql })` from `@avgeek-oss/auth-core/api-keys` offers the same operations without Hono, and `auth.apiKeys` is the instance `createAuth` uses.
 
 ## SCIM
 
