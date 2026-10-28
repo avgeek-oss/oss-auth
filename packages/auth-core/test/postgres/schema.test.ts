@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deriveKey, generateToken, hashToken } from "../../src/index.js";
 import { migrate, quoteIdent, type Sql } from "../../src/postgres/index.js";
@@ -317,6 +317,157 @@ describe.skipIf(!databaseUrl).each(adapters)(
             [live],
           ),
         ).toEqual([]);
+      });
+    });
+
+    describe("0004", () => {
+      let keyCounter = 0;
+      const keyId = () =>
+        `0${String(++keyCounter).padStart(4, "0")}${"A".repeat(21)}`;
+      const insertKey = async (
+        userId: string,
+        fields: Record<string, unknown> = {},
+      ) => {
+        const values = {
+          id: keyId(),
+          user_id: userId,
+          name: "CI",
+          ceiling: "viewer",
+          secret_hash: randomBytes(32).toString("hex"),
+          expires_at: new Date(Date.now() + 86400_000),
+          ...fields,
+        };
+        const names = Object.keys(values);
+        await sql.query(
+          `INSERT INTO ${t("api_keys")} (${names.join(", ")})
+           VALUES (${names.map((_, i) => `$${i + 1}`).join(", ")})`,
+          Object.values(values),
+        );
+        return values.id;
+      };
+
+      it("gives keys only to active users with a role, and checks every column", async () => {
+        const owner = await createUser({ role: "member" });
+        await insertKey(owner);
+        await expect(insertKey(await createUser())).rejects.toThrow(
+          /cannot get an API key/,
+        );
+        await expect(
+          insertKey(
+            await createUser({
+              role: "admin",
+              active: false,
+              deactivated_at: new Date(),
+            }),
+          ),
+        ).rejects.toThrow(/cannot get an API key/);
+        for (const fields of [
+          { id: "not-a-key-id" },
+          { ceiling: "owner" },
+          { ceiling: null },
+          { name: "" },
+          { workspace: "" },
+          { secret_hash: "secret" },
+          { expires_at: new Date(Date.now() - 86400_000) },
+        ])
+          await expect(insertKey(owner, fields)).rejects.toThrow(
+            /violates|null value/,
+          );
+        const id = await insertKey(owner, { expires_at: null });
+        await expect(
+          sql.query(
+            `UPDATE ${t("api_keys")} SET replaced_by = $2 WHERE id = $1`,
+            [id, id],
+          ),
+        ).rejects.toThrow(/api_keys_rotation|not_self_replaced/);
+      });
+
+      it("never changes a key's owner, ceiling, workspace, secret or expiry", async () => {
+        const owner = await createUser({ role: "admin" });
+        const id = await insertKey(owner, { workspace: "w" });
+        for (const change of [
+          "ceiling = 'admin'",
+          "workspace = 'other'",
+          "workspace = NULL",
+          `secret_hash = '${"0".repeat(64)}'`,
+          "expires_at = expires_at + interval '1 day'",
+          `user_id = '${await createUser({ role: "admin" })}'`,
+        ])
+          await fails(`UPDATE ${t("api_keys")} SET ${change} WHERE id = $1`, [
+            id,
+          ]);
+        await sql.query(
+          `UPDATE ${t("api_keys")} SET last_used_at = now(), name = 'Renamed' WHERE id = $1`,
+          [id],
+        );
+        await fails(
+          `UPDATE ${t("api_keys")} SET last_used_at = last_used_at - interval '1 hour' WHERE id = $1`,
+          [id],
+        );
+      });
+
+      it("replaces a key once and keeps revocation final", async () => {
+        const owner = await createUser({ role: "member" });
+        const [a, b, c] = [
+          await insertKey(owner),
+          await insertKey(owner),
+          await insertKey(owner),
+        ];
+        await sql.query(
+          `UPDATE ${t("api_keys")} SET replaced_by = $2, grace_until = now() WHERE id = $1`,
+          [a, b],
+        );
+        await fails(
+          `UPDATE ${t("api_keys")} SET replaced_by = $2, grace_until = now() WHERE id = $1`,
+          [a, c],
+          /replaced only once/,
+        );
+        await fails(
+          `UPDATE ${t("api_keys")} SET grace_until = now() + interval '1 day' WHERE id = $1`,
+          [a],
+          /replaced only once/,
+        );
+        await sql.query(
+          `UPDATE ${t("api_keys")} SET revoked_at = now() WHERE id = $1`,
+          [c],
+        );
+        await fails(
+          `UPDATE ${t("api_keys")} SET revoked_at = now() + interval '1 hour' WHERE id = $1`,
+          [c],
+        );
+      });
+
+      it("revokes keys on deactivation and above a lowered role, but not on NULL", async () => {
+        const owner = await createUser({ role: "admin" });
+        const ids = {
+          viewer: await insertKey(owner, { ceiling: "viewer" }),
+          member: await insertKey(owner, { ceiling: "member" }),
+          admin: await insertKey(owner, { ceiling: "admin" }),
+        };
+        const revoked = async () =>
+          (
+            await sql.query<{ ceiling: string }>(
+              `SELECT ceiling FROM ${t("api_keys")}
+               WHERE user_id = $1 AND revoked_at IS NOT NULL ORDER BY ceiling`,
+              [owner],
+            )
+          ).map((r) => r.ceiling);
+        await sql.query(
+          `UPDATE ${t("users")} SET role = 'viewer' WHERE id = $1`,
+          [owner],
+        );
+        expect(await revoked()).toEqual(["admin", "member"]);
+        // A NULL role suspends: it revokes nothing.
+        await sql.query(`UPDATE ${t("users")} SET role = NULL WHERE id = $1`, [
+          owner,
+        ]);
+        expect(await revoked()).toEqual(["admin", "member"]);
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now() WHERE id = $1`,
+          [owner],
+        );
+        expect(await revoked()).toEqual(["admin", "member", "viewer"]);
+        expect(Object.keys(ids)).toHaveLength(3);
       });
     });
 

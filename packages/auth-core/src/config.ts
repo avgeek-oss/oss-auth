@@ -10,6 +10,11 @@ export const MIN_SECRET_BYTES = 32;
 /** The fewest characters a SCIM bearer token may have. */
 export const MIN_SCIM_TOKEN_LENGTH = 32;
 
+/** The longest `<APP>_API_KEY_MAX_TTL_DAYS` accepts: ten years. */
+export const MAX_API_KEY_TTL_DAYS = 3650;
+
+const API_KEY_PREFIX_PATTERN = /^[a-z][a-z0-9]{1,15}$/;
+
 /** The role map used when `<APP>_OIDC_ROLE_MAP` is unset: role names map to themselves. */
 export const DEFAULT_ROLE_MAP_VALUES: Readonly<Record<string, Role>> =
   Object.freeze(Object.fromEntries(ROLES.map((role) => [role, role])));
@@ -47,6 +52,18 @@ export interface AuthConfig {
      * in authentik's hashed-user-id subject mode. Default `false`.
      */
     readonly externalIdIsSubject: boolean;
+  };
+  readonly apiKeys: {
+    /**
+     * `<APP>_API_KEY_PREFIX`: the first part of every key, such as
+     * `posted`. Defaults to the app id when that is 2 to 16 characters;
+     * `null` when neither gives one, and then API keys are off.
+     */
+    readonly prefix: string | null;
+    /** `<APP>_API_KEY_MAX_TTL_DAYS` (default 365), in seconds. */
+    readonly maxTtlSeconds: number;
+    /** `<APP>_API_KEY_ALLOW_NO_EXPIRY`: allow keys that never expire. Default `false`. */
+    readonly allowNoExpiry: boolean;
   };
   /**
    * `<APP>_ROLE_SOURCE`: where roles come from. `claims` (default) reads the
@@ -313,6 +330,41 @@ const fields = z
         }
         return normalised as "claims" | "scim";
       }),
+    API_KEY_PREFIX: z
+      .string(required("2 to 16 lowercase letters or digits"))
+      .optional()
+      .refine(
+        (value) => value === undefined || API_KEY_PREFIX_PATTERN.test(value),
+        {
+          error:
+            "must be 2 to 16 lowercase letters or digits, starting with a letter, such as posted",
+        },
+      ),
+    API_KEY_MAX_TTL_DAYS: z
+      .string(required("a number of days"))
+      .default("365")
+      .transform((value, ctx) => {
+        const days = /^\d{1,4}$/.test(value.trim()) ? Number(value) : NaN;
+        if (!(days >= 1 && days <= MAX_API_KEY_TTL_DAYS)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `must be a whole number of days from 1 to ${MAX_API_KEY_TTL_DAYS}`,
+          });
+          return z.NEVER;
+        }
+        return days;
+      }),
+    API_KEY_ALLOW_NO_EXPIRY: z
+      .string(required("true or false"))
+      .default("false")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        if (normalised !== "true" && normalised !== "false") {
+          ctx.addIssue({ code: "custom", message: "must be true or false" });
+          return z.NEVER;
+        }
+        return normalised === "true";
+      }),
     WEB_ORIGIN: origin,
     API_ORIGIN: origin,
     SESSION_MAX_AGE: duration(300, 30 * 86400, "12h"),
@@ -420,6 +472,12 @@ export function loadAuthConfig(
     scim: Object.freeze({
       tokens: Object.freeze(v.SCIM_TOKENS),
       externalIdIsSubject: v.SCIM_EXTERNAL_ID_IS_SUBJECT,
+    }),
+    apiKeys: Object.freeze({
+      prefix:
+        v.API_KEY_PREFIX ?? (API_KEY_PREFIX_PATTERN.test(app) ? app : null),
+      maxTtlSeconds: v.API_KEY_MAX_TTL_DAYS * 86400,
+      allowNoExpiry: v.API_KEY_ALLOW_NO_EXPIRY,
     }),
     roleSource: v.ROLE_SOURCE,
     origins: Object.freeze({ web: v.WEB_ORIGIN, api: v.API_ORIGIN }),

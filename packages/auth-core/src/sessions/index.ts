@@ -205,7 +205,12 @@ export function createSessions<Ext extends object = Record<never, never>>(
         session,
         actor: createActor<Ext>({
           user,
-          credential: { kind: "session", id: idHash, ceiling: null },
+          credential: {
+            kind: "session",
+            id: idHash,
+            ceiling: null,
+            workspace: null,
+          },
           ext,
         }),
       };

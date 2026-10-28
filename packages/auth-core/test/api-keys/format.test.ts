@@ -12,7 +12,7 @@ import {
   isValidApiKey,
   parseApiKey,
   type InvalidApiKeyReason,
-} from "../src/index.js";
+} from "../../src/index.js";
 
 const ID = "01JBX5E8W6TGGDFXR9NB7QH4PC";
 const SECRET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg";

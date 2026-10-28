@@ -41,6 +41,11 @@
       "types": "./dist/oidc/index.d.ts",
       "import": "./dist/oidc/index.js"
     },
+    "./api-keys": {
+      "source": "./src/api-keys/index.ts",
+      "types": "./dist/api-keys/index.d.ts",
+      "import": "./dist/api-keys/index.js"
+    },
     "./sessions": {
       "source": "./src/sessions/index.ts",
       "types": "./dist/sessions/index.d.ts",

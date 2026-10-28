@@ -33,6 +33,12 @@ export interface ActorCredential {
    * session acts with the user's full role).
    */
   readonly ceiling: Role | null;
+  /**
+   * The app-defined workspace an API key (or OAuth grant) was issued for,
+   * or `null`. auth-core stores it and never interprets it: the app must
+   * enforce it.
+   */
+  readonly workspace: string | null;
 }
 
 /**

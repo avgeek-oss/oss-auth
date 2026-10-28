@@ -16,7 +16,12 @@ import {
 import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
 
 const core = await loadMigrations();
-const BUNDLED = ["0001_core.sql", "0002_sessions_oidc.sql", "0003_scim.sql"];
+const BUNDLED = [
+  "0001_core.sql",
+  "0002_sessions_oidc.sql",
+  "0003_scim.sql",
+  "0004_api_keys.sql",
+];
 const extra = (
   name: string,
   body = "CREATE TABLE extra (n int);",
@@ -154,6 +159,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           existing: [],
         });
         expect((await tables("auth")).map((t) => t.name)).toEqual([
+          "api_keys",
           "logout_jtis",
           "schema_migrations",
           "scim_group_members",
@@ -177,6 +183,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
         applied: BUNDLED,
       });
       expect((await tables(schema)).map((t) => t.name)).toEqual([
+        "api_keys",
         "logout_jtis",
         "schema_migrations",
         "scim_group_members",
@@ -205,11 +212,14 @@ describe.skipIf(!databaseUrl).each(adapters)(
         [schema],
       );
       expect(functions.map((f) => f.name)).toEqual([
+        "api_keys_before_insert",
+        "api_keys_before_update",
         "scim_group_members_before_insert",
         "scim_groups_before_update",
         "sessions_before_insert",
         "sessions_before_update",
         "users_before_update",
+        "users_revoke_api_keys",
         "users_revoke_sessions",
       ]);
       for (const f of functions)

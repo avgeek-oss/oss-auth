@@ -42,6 +42,7 @@ describe("createActor", () => {
         kind: "api_key",
         id: "01JBX5E8W6TGGDFXR9NB7QH4PC",
         ceiling: "admin",
+        workspace: "w1",
       },
       ext: { workspaceId: "w1" },
     });
@@ -53,7 +54,12 @@ describe("createActor", () => {
   it("defaults the extension to an empty object", () => {
     const actor = createActor({
       user: user("admin"),
-      credential: { kind: "session", id: "a".repeat(64), ceiling: null },
+      credential: {
+        kind: "session",
+        id: "a".repeat(64),
+        ceiling: null,
+        workspace: null,
+      },
     });
     expect(actor.role).toBe("admin");
     expect(actor.ext).toEqual({});
@@ -62,7 +68,12 @@ describe("createActor", () => {
   it("applies an OAuth grant's ceiling", () => {
     const actor = createActor({
       user: user("admin"),
-      credential: { kind: "oauth", id: "grant-1", ceiling: "viewer" },
+      credential: {
+        kind: "oauth",
+        id: "grant-1",
+        ceiling: "viewer",
+        workspace: null,
+      },
     });
     expect(actor.role).toBe("viewer");
   });

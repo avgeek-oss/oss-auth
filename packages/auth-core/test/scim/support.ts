@@ -3,7 +3,12 @@ import { loadAuthConfig, type AuthConfig, type Role } from "../../src/index.js";
 import { migrate, quoteIdent, type Sql } from "../../src/postgres/index.js";
 import { createScim, type ScimHooks } from "../../src/scim/index.js";
 import { createSessions } from "../../src/sessions/index.js";
-import { adapters, dropSchemas, uniqueSchema } from "../postgres/support.js";
+import {
+  adapters,
+  dropSchemas,
+  uniqueSchema,
+  type Adapter,
+} from "../postgres/support.js";
 
 export const ISSUER = "https://auth.example.com/application/o/posted/";
 export const TOKEN = "scim-token-".repeat(4);
@@ -49,12 +54,12 @@ export interface ScimStack {
   close(): Promise<void>;
 }
 
-/** Starts a SCIM stack on the `pg` adapter. */
+/** Starts a SCIM stack, on the `pg` adapter unless another is given. */
 export async function startScim(
   env: Readonly<Record<string, string>> = {},
-  options: { failHook?: () => boolean } = {},
+  options: { failHook?: () => boolean; adapter?: Adapter } = {},
 ): Promise<ScimStack> {
-  const { sql, close } = (adapters[0] ?? raise()).open();
+  const { sql, close } = (options.adapter ?? adapters[0] ?? raise()).open();
   const schema = uniqueSchema("scim");
   await migrate(sql, { schema });
   const config = loadAuthConfig("posted", {

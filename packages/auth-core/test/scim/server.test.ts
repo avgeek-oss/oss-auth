@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { loadAuthConfig } from "../../src/index.js";
+import { createApiKeys } from "../../src/api-keys/index.js";
 import { createScim } from "../../src/scim/index.js";
 import { createSessions } from "../../src/sessions/index.js";
 import { AuthConfigError } from "../../src/errors.js";
@@ -686,6 +687,42 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
         { hook: "deactivate", userId: id },
         { hook: "role", userId: id, from: null, to: "admin" },
       ]);
+    });
+
+    it("revokes API keys on deactivation, deletion and a SCIM downgrade", async () => {
+      const s = await stack({ POSTED_ROLE_SOURCE: "scim" });
+      const keys = createApiKeys({ sql: s.sql, config: s.config });
+      const issue = (userId: string, ceiling: "viewer" | "member" | "admin") =>
+        keys.create({ userId, name: "CI", ceiling });
+      const ada = await create(s, "ada");
+      const grace = await create(s, "grace");
+      const linus = await create(s, "linus");
+      const admins = await group(s, "posted-admins", [grace, linus]);
+      await group(s, "posted-viewers", [ada, linus]);
+      const a = await issue(ada, "viewer");
+      const g = await issue(grace, "admin");
+      const l = await issue(linus, "admin");
+      const lv = await issue(linus, "viewer");
+
+      await s.json(
+        "PATCH",
+        `/Users/${ada}`,
+        patchBody({ op: "replace", path: "active", value: false }),
+      );
+      expect(await keys.verify(a.key)).toBeNull();
+      expect((await keys.get(a.record.id))?.revokedAt).toBeInstanceOf(Date);
+
+      await s.request("DELETE", `/Users/${grace}`);
+      expect(await keys.verify(g.key)).toBeNull();
+      expect((await keys.get(g.record.id))?.revokedAt).toBeInstanceOf(Date);
+
+      await s.json(
+        "PATCH",
+        `/Groups/${admins}`,
+        patchBody({ op: "remove", path: `members[value eq "${linus}"]` }),
+      );
+      expect((await keys.get(l.record.id))?.revokedAt).toBeInstanceOf(Date);
+      expect((await keys.verify(lv.key))?.actor.role).toBe("viewer");
     });
 
     it("rolls the change back when a hook fails", async () => {

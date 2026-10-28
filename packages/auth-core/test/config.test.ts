@@ -48,6 +48,11 @@ describe("loadAuthConfig", () => {
         scopes: ["openid", "email", "profile"],
       },
       scim: { tokens: [], externalIdIsSubject: false },
+      apiKeys: {
+        prefix: "posted",
+        maxTtlSeconds: 365 * 86400,
+        allowNoExpiry: false,
+      },
       roleSource: "claims",
       origins: {
         web: "https://posted.example.com",
@@ -288,6 +293,53 @@ describe("loadAuthConfig", () => {
       expect(
         variables({ ...base, POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT: "yes" }),
       ).toEqual(["POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT"]);
+    });
+  });
+
+  describe("API keys", () => {
+    it("reads the prefix, maximum lifetime and the no-expiry switch", () => {
+      const config = loadAuthConfig("posted", {
+        ...base,
+        POSTED_API_KEY_PREFIX: "pst",
+        POSTED_API_KEY_MAX_TTL_DAYS: "30",
+        POSTED_API_KEY_ALLOW_NO_EXPIRY: "TRUE",
+      });
+      expect(config.apiKeys).toEqual({
+        prefix: "pst",
+        maxTtlSeconds: 30 * 86400,
+        allowNoExpiry: true,
+      });
+    });
+
+    it("defaults the prefix to the app id only when it fits", () => {
+      const env = {
+        ...base,
+        X_SECRET: SECRET,
+        X_OIDC_ISSUER: base.POSTED_OIDC_ISSUER,
+        X_OIDC_CLIENT_ID: "x",
+        X_OIDC_CLIENT_SECRET: "x",
+        X_WEB_ORIGIN: base.POSTED_WEB_ORIGIN,
+        X_API_ORIGIN: base.POSTED_API_ORIGIN,
+      };
+      expect(loadAuthConfig("x", env).apiKeys.prefix).toBeNull();
+      expect(
+        loadAuthConfig("x", { ...env, X_API_KEY_PREFIX: "xapp" }).apiKeys
+          .prefix,
+      ).toBe("xapp");
+    });
+
+    it("rejects bad prefixes, lifetimes and switches", () => {
+      for (const prefix of ["P", "a", "1abc", "posted_x", "a".repeat(17)])
+        expect(variables({ ...base, POSTED_API_KEY_PREFIX: prefix })).toEqual([
+          "POSTED_API_KEY_PREFIX",
+        ]);
+      for (const days of ["0", "3651", "1.5", "-1", "year"])
+        expect(
+          variables({ ...base, POSTED_API_KEY_MAX_TTL_DAYS: days }),
+        ).toEqual(["POSTED_API_KEY_MAX_TTL_DAYS"]);
+      expect(
+        variables({ ...base, POSTED_API_KEY_ALLOW_NO_EXPIRY: "yes" }),
+      ).toEqual(["POSTED_API_KEY_ALLOW_NO_EXPIRY"]);
     });
   });
 
