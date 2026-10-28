@@ -28,7 +28,7 @@ const session = await auth.getSession(); // null when signed out
 if (!session) location.assign(auth.signInUrl("/boards"));
 ```
 
-Every request sends cookies (`credentials: "include"`) and, except GETs, the CSRF header auth-core checks (`x-requested-with` by default). The session cookie is `SameSite=Lax`, so the page and the API must be the same site. If they are on different origins, the API must also answer CORS requests from the page's origin with credentials allowed. A proxy that serves the API under the page's origin, as the reference app does, needs neither.
+Every request sends cookies (`credentials: "include"`) and, except GETs, the CSRF header auth-core checks (`x-requested-with` by default). The session cookie is `SameSite=Lax`, so the page and the API must be the same site. When they are different hosts, such as `posted.example.com` and `api.posted.example.com`, use auth-core's `auth.middleware.cors`: the auth and consent routes already have it, and the app adds it in front of its own browser routes (`app.use("/api/*", auth.middleware.cors, …)`). The alternative is a proxy that serves the API under the page's origin, as the reference app does, which needs no CORS.
 
 ### React with Vite
 

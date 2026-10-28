@@ -750,6 +750,9 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
 
   const roleUpTo = (role: Role) => ROLES.filter((r) => roleAtLeast(role, r));
 
+  // The consent screen is a page on the web origin, which may be another
+  // host: CORS for it, and for nothing else on these routes.
+  routes.use("/oauth/consent/*", auth.middleware.cors);
   routes.use(
     "/oauth/consent/*",
     auth.middleware.actor,
@@ -1193,6 +1196,7 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
   });
 
   const appsPath = `${auth.basePath}/connected-apps`;
+  // CORS for these comes from auth.routes, mounted at the same basePath.
   routes.use(
     `${appsPath}/*`,
     auth.middleware.actor,

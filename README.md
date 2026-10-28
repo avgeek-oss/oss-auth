@@ -70,7 +70,13 @@ await migrate(db, { schema: config.schema });
 
 const auth = createAuth({ config, sql: db });
 app.route("/auth", auth.routes);
-app.use("/api/*", auth.middleware.actor, auth.middleware.trustedOrigin);
+// cors: for pages on another host of the same site, such as api. and www.
+app.use(
+  "/api/*",
+  auth.middleware.cors,
+  auth.middleware.actor,
+  auth.middleware.trustedOrigin,
+);
 app.post("/api/members", auth.middleware.requireRole("admin"), addMember);
 ```
 

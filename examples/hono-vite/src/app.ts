@@ -32,7 +32,7 @@ export function createExampleApp(options: {
     sql: options.sql,
     ...(options.oidc ? { oidc: options.oidc } : {}),
   });
-  const { actor, requireActor, requireRecentAuth, trustedOrigin } =
+  const { cors, actor, requireActor, requireRecentAuth, trustedOrigin } =
     auth.middleware;
 
   const mcp = createMcpAuth({
@@ -46,7 +46,9 @@ export function createExampleApp(options: {
   const app = new Hono<AuthEnv<Record<never, never>>>();
   app.route("/auth", auth.routes);
   app.route("/", mcp.routes);
-  app.use("/api/*", actor, trustedOrigin, requireActor);
+  // cors matters when the page is on another host; behind the dev proxy
+  // the page and API share an origin and it adds nothing.
+  app.use("/api/*", cors, actor, trustedOrigin, requireActor);
 
   app.get("/api/me", (c) => {
     const me = c.get("actor");
