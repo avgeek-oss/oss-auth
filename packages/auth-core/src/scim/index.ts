@@ -129,7 +129,7 @@ export function createScim(options: CreateScimOptions): Hono {
     ]);
   const sessions = options.sessions ?? createSessions({ sql, config });
   const limiter = options.rateLimiter ?? createRateLimiter({ sql, config });
-  const clientIp = clientIpResolver(config.rateLimits.trustedProxies);
+  const clientIp = clientIpResolver(config.rateLimits);
   const hooks = options.hooks ?? {};
   const base = `${config.origins.api}${(options.basePath ?? "/scim/v2").replace(/\/$/, "")}`;
   const key = deriveKey(config.secret, config.app, "scim-token");

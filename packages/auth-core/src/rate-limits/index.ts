@@ -4,78 +4,33 @@ import { quoteIdent } from "../identifiers.js";
 import { deriveKey } from "../keys.js";
 import type { Sql } from "../postgres/sql.js";
 import { hashToken } from "../tokens.js";
+import {
+  findPolicy,
+  gcraShape as shape,
+  type RateLimitPolicy,
+  type RateLimitResult,
+} from "./policy.js";
 
 export {
   ipLimitKey,
   normaliseIp,
   parseTrustedProxies,
   resolveClientIp,
+  TRUSTED_PROXY_HEADERS,
+  type TrustedProxyHeader,
 } from "./ip.js";
+export {
+  DEFAULT_RATE_LIMITS,
+  type RateLimitPolicy,
+  type RateLimitPolicyName,
+  type RateLimitResult,
+} from "./policy.js";
 export {
   clientIpResolver,
   isLimitError,
   limitResponse,
   type LimitSurface,
 } from "./responses.js";
-
-/**
- * A rate: `limit` requests per `periodSeconds` on average, and at most
- * `burst` at once (default `limit`).
- */
-export interface RateLimitPolicy {
-  readonly limit: number;
-  readonly periodSeconds: number;
-  readonly burst?: number;
-}
-
-/** The outcome of {@link RateLimiter.consume}. */
-export interface RateLimitResult {
-  readonly allowed: boolean;
-  /** Whole seconds until the request would be allowed; 0 when allowed. */
-  readonly retryAfterSeconds: number;
-  /** Requests that could still be made right now. */
-  readonly remaining: number;
-}
-
-/**
- * The policies auth-core applies, by name. Each can be changed with
- * `<APP>_RATE_LIMITS`.
- */
-export const DEFAULT_RATE_LIMITS = {
-  /** `/auth/sign-in`, `/auth/callback` and `/auth/step-up`, per IP. */
-  oidc: { limit: 30, periodSeconds: 60 },
-  /** `/auth/backchannel-logout`, per IP. */
-  "oidc.backchannel-logout": { limit: 60, periodSeconds: 60 },
-  /** MCP `/oauth/authorize`, per IP. */
-  "oauth.authorize": { limit: 30, periodSeconds: 60 },
-  /** Client metadata document fetches (cache misses only), per IP. */
-  "oauth.metadata.ip": { limit: 10, periodSeconds: 60 },
-  /** Client metadata document fetches, per document host. */
-  "oauth.metadata.host": { limit: 20, periodSeconds: 60 },
-  /** Client metadata document fetches, across the whole app. */
-  "oauth.metadata.global": { limit: 100, periodSeconds: 60 },
-  /** `/oauth/token`, per IP. */
-  "oauth.token.ip": { limit: 120, periodSeconds: 60 },
-  /** `/oauth/token`, per client id. */
-  "oauth.token.client": { limit: 60, periodSeconds: 60 },
-  /** `/oauth/token` answers of `invalid_grant` or `invalid_client`, per client id and IP. */
-  "oauth.token.failures": { limit: 10, periodSeconds: 60 },
-  /** `/oauth/revoke`, per IP. */
-  "oauth.revoke": { limit: 60, periodSeconds: 60 },
-  /** Legacy dynamic client registration, per IP. */
-  "oauth.register": { limit: 5, periodSeconds: 3600 },
-  /** Consent decisions, per user. */
-  "oauth.consent": { limit: 30, periodSeconds: 60 },
-  /** API key creation and rotation, per user. */
-  "api-keys.write": { limit: 30, periodSeconds: 60 },
-  /** Invalid API keys or OAuth bearer tokens presented, per IP. */
-  "bearer.invalid": { limit: 60, periodSeconds: 60 },
-  /** SCIM requests, per bearer token. */
-  scim: { limit: 3000, periodSeconds: 60 },
-} as const satisfies Readonly<Record<string, RateLimitPolicy>>;
-
-/** The name of a built-in policy. */
-export type RateLimitPolicyName = keyof typeof DEFAULT_RATE_LIMITS;
 
 /** Options for {@link createRateLimiter}. */
 export interface RateLimiterOptions {
@@ -137,25 +92,10 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
   const T = "coalesce($1::timestamptz, now())";
 
   const policy: RateLimiter["policy"] = (name, fallback) => {
-    const chosen =
-      config.rateLimits.policies[name] ??
-      (DEFAULT_RATE_LIMITS as Readonly<Record<string, RateLimitPolicy>>)[
-        name
-      ] ??
-      fallback;
+    const chosen = findPolicy(config.rateLimits.policies, name, fallback);
     if (!chosen)
       throw new TypeError(`No rate limit policy is named "${name}".`);
     return chosen;
-  };
-
-  /**
-   * The GCRA parameters in whole microseconds, the timestamp resolution, so
-   * that `burst` intervals add up to exactly the window: the emission
-   * interval, and the window a bucket may run ahead of now.
-   */
-  const shape = (p: RateLimitPolicy) => {
-    const interval = Math.max(1, Math.round((p.periodSeconds * 1e6) / p.limit));
-    return { interval, window: interval * (p.burst ?? p.limit) };
   };
 
   const bucket = (name: string, key: string) =>

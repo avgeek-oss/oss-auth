@@ -67,30 +67,31 @@ Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "st
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                            | Default                | Meaning                                                                                                |
-| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                            |
-| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                    |
-| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                    |
-| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                                  |
-| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                               |
-| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                       |
-| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                        |
-| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.              |
-| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                      |
-| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.           |
-| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                  |
-| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                                 |
-| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one.    |
-| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                      |
-| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                          |
-| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                             |
-| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                                 |
-| `<APP>_TRUSTED_PROXIES`             | unset                  | CIDRs of the proxies in front of the API, whose `X-Forwarded-For` or `Forwarded` headers are believed. |
-| `<APP>_RATE_LIMITS`                 | `{}`                   | Policies that replace the defaults, as JSON (see Rate limits).                                         |
-| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                             |
-| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                      |
-| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                               |
+| Variable                            | Default                | Meaning                                                                                              |
+| ----------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                          |
+| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                  |
+| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                  |
+| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                                |
+| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                             |
+| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                     |
+| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                      |
+| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.            |
+| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                    |
+| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.         |
+| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                |
+| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                               |
+| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one.  |
+| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                    |
+| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                        |
+| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                           |
+| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                               |
+| `<APP>_TRUSTED_PROXIES`             | unset                  | CIDRs of the proxies in front of the API, whose forwarding header is believed.                       |
+| `<APP>_TRUSTED_PROXY_HEADER`        | `x-forwarded-for`      | The one header those proxies set: `x-forwarded-for` or `forwarded` (RFC 7239). The other is ignored. |
+| `<APP>_RATE_LIMITS`                 | `{}`                   | Policies that replace the defaults, as JSON (see Rate limits).                                       |
+| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                           |
+| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                    |
+| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                             |
 
 ## API keys
 
@@ -213,13 +214,17 @@ POSTED_RATE_LIMITS='{"oauth.token.ip":{"limit":300,"periodSeconds":60},"scim":{"
 
 ### Client IPs and trusted proxies
 
-The client's IP is the socket's peer address (from `@hono/node-server`; on other runtimes pass `getClientIp` to `createAuth`). `X-Forwarded-For` and `Forwarded` are believed only when that peer is in `<APP>_TRUSTED_PROXIES`, and then only from the right: trusted hops are skipped, and the first untrusted address is the client, so a client cannot choose its own address by sending the header. Per-IP limits key on the address for IPv4 and on the /64 for IPv6, since one host usually holds a whole /64. With no trusted proxies, the default, the headers are ignored.
+The client's IP is the socket's peer address (from `@hono/node-server`; on other runtimes pass `getClientIp` to `createAuth`). A forwarding header is believed only when that peer is in `<APP>_TRUSTED_PROXIES`, and then only from the right: trusted hops are skipped, and the first untrusted address is the client, so a client cannot choose its own address by sending the header. A hop that is not an address (`unknown`, an obfuscated `_hidden`, or garbage) ends the walk at the last trusted proxy. Per-IP limits key on the address for IPv4 and on the /64 for IPv6, since one host usually holds a whole /64. With no trusted proxies, the default, forwarding headers are ignored.
 
-With Caddy on the same host, `reverse_proxy` sets `X-Forwarded-For` to the client's address:
+Only one header is read: `X-Forwarded-For` by default, or `Forwarded` with `<APP>_TRUSTED_PROXY_HEADER=forwarded`. The other is ignored entirely, even from a trusted proxy, since a proxy that sets one usually passes a client-written copy of the other straight through. In `forwarded` mode every element counts as one hop, and an element without exactly one `for=` stops the walk. Configure your proxy to strip or overwrite the header it does not set, as below.
+
+With Caddy on the same host, `reverse_proxy` replaces `X-Forwarded-For` with the client's address (it ignores the incoming one unless Caddy's own `trusted_proxies` says otherwise) but passes `Forwarded` through, so strip it:
 
 ```caddyfile
 api.posted.example.com {
-	reverse_proxy 127.0.0.1:8787
+	reverse_proxy 127.0.0.1:8787 {
+		header_up -Forwarded
+	}
 }
 ```
 
@@ -227,19 +232,22 @@ api.posted.example.com {
 POSTED_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
 
-With nginx, append the peer address to the chain, and trust nginx's address (and any load balancer in front of it):
+With nginx, append the peer address to the chain, clear `Forwarded` (an empty value is not sent), and trust nginx's address (and any load balancer in front of it):
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8787;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Forwarded "";
 }
 ```
 
 ```sh
 POSTED_TRUSTED_PROXIES=127.0.0.1/32,10.0.0.0/8
 ```
+
+Use `forwarded` mode only when every trusted proxy appends a `Forwarded` element with `for=`; `X-Forwarded-For` is then ignored.
 
 ## SCIM
 

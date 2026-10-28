@@ -49,7 +49,11 @@ describe("loadAuthConfig", () => {
       },
       scim: { tokens: [], externalIdIsSubject: false },
       oauth: { clients: [], legacyDcr: false },
-      rateLimits: { trustedProxies: [], policies: {} },
+      rateLimits: {
+        trustedProxies: [],
+        proxyHeader: "x-forwarded-for",
+        policies: {},
+      },
       apiKeys: {
         prefix: "posted",
         maxTtlSeconds: 365 * 86400,
@@ -380,6 +384,7 @@ describe("loadAuthConfig", () => {
       const config = loadAuthConfig("posted", {
         ...base,
         POSTED_TRUSTED_PROXIES: " 10.0.0.0/8, 192.0.2.1 ,fd00::/8 ",
+        POSTED_TRUSTED_PROXY_HEADER: " Forwarded ",
         POSTED_RATE_LIMITS: JSON.stringify({
           "oauth.token.ip": { limit: 300, periodSeconds: 60 },
           "app.exports": { limit: 5, periodSeconds: 3600, burst: 2 },
@@ -387,6 +392,7 @@ describe("loadAuthConfig", () => {
       });
       expect(config.rateLimits).toEqual({
         trustedProxies: ["10.0.0.0/8", "192.0.2.1", "fd00::/8"],
+        proxyHeader: "forwarded",
         policies: {
           "oauth.token.ip": { limit: 300, periodSeconds: 60 },
           "app.exports": { limit: 5, periodSeconds: 3600, burst: 2 },
@@ -394,7 +400,29 @@ describe("loadAuthConfig", () => {
       });
     });
 
-    it("rejects bad proxies and policies", () => {
+    it("keeps policy names off the prototype chain", () => {
+      const { policies } = loadAuthConfig("posted", {
+        ...base,
+        POSTED_RATE_LIMITS: JSON.stringify({
+          constructor: { limit: 2, periodSeconds: 60 },
+        }),
+      }).rateLimits;
+      expect(Object.getPrototypeOf(policies)).toBeNull();
+      expect(policies.constructor).toEqual({ limit: 2, periodSeconds: 60 });
+      expect("toString" in policies).toBe(false);
+      expect(
+        variables({
+          ...base,
+          POSTED_RATE_LIMITS: '{"__proto__":{"limit":1,"periodSeconds":1}}',
+        }),
+      ).toEqual(["POSTED_RATE_LIMITS"]);
+    });
+
+    it("rejects bad proxies, proxy headers and policies", () => {
+      for (const value of ["x-real-ip", "both", "x-forwarded-for,forwarded"])
+        expect(
+          variables({ ...base, POSTED_TRUSTED_PROXY_HEADER: value }),
+        ).toEqual(["POSTED_TRUSTED_PROXY_HEADER"]);
       for (const value of [
         "10.0.0.0/33",
         "proxy.example.com",

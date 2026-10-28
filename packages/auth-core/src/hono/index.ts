@@ -300,10 +300,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
   const rateLimiter =
     options.rateLimiter ??
     createRateLimiter({ sql, config, ...(clock ? { now: clock } : {}) });
-  const clientIp = clientIpResolver(
-    config.rateLimits.trustedProxies,
-    options.getClientIp,
-  );
+  const clientIp = clientIpResolver(config.rateLimits, options.getClientIp);
   const ipKey = (c: Context) => ipLimitKey(clientIp(c) ?? "unknown");
 
   /** Runs `work`, answering a limit refusal or a store failure itself. */

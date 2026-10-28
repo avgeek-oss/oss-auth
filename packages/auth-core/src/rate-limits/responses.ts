@@ -1,6 +1,10 @@
 import type { Context } from "hono";
 import { RateLimitedError, RateLimiterUnavailableError } from "../errors.js";
-import { parseTrustedProxies, resolveClientIp } from "./ip.js";
+import {
+  parseTrustedProxies,
+  resolveClientIp,
+  type TrustedProxyHeader,
+} from "./ip.js";
 
 /**
  * How a route answers a refusal:
@@ -70,20 +74,26 @@ function socketPeer(c: Context): string | null {
 
 /**
  * A function from a request to its client's address: the socket peer (or
- * what `getPeer` returns, for other runtimes), and through
- * `X-Forwarded-For` or `Forwarded` when the peer is one of
+ * what `getPeer` returns, for other runtimes), and through the configured
+ * forwarding header (`<APP>_TRUSTED_PROXY_HEADER`) when the peer is one of
  * `<APP>_TRUSTED_PROXIES`. `null` when no peer address is known.
  */
 export function clientIpResolver(
-  trustedProxies: readonly string[],
+  settings: {
+    readonly trustedProxies: readonly string[];
+    readonly proxyHeader: TrustedProxyHeader;
+  },
   getPeer: (c: Context) => string | null | undefined = socketPeer,
 ): (c: Context) => string | null {
-  const trusted = parseTrustedProxies(trustedProxies);
+  const trusted = parseTrustedProxies(settings.trustedProxies);
+  const header = settings.proxyHeader;
   return (c) =>
     resolveClientIp({
       peer: getPeer(c),
       trusted,
-      forwarded: c.req.header("forwarded"),
-      xForwardedFor: c.req.header("x-forwarded-for"),
+      header,
+      ...(header === "forwarded"
+        ? { forwarded: c.req.header("forwarded") }
+        : { xForwardedFor: c.req.header("x-forwarded-for") }),
     });
 }

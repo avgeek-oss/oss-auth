@@ -26,9 +26,59 @@ describe("normaliseIp", () => {
       ["_hidden", null],
       ["999.1.1.1", null],
       ["", null],
+      ["[2001:db8::1", null],
+      ["[2001:db8::1]x", null],
+      ["::ffff:1.2.3.4.5", null],
+      [`${"0".repeat(60)}1.2.3.4`, null],
     ];
     for (const [input, expected] of cases)
       expect(normaliseIp(input), input).toBe(expected);
+  });
+});
+
+describe("hostile input", () => {
+  // Headers are client-written: parsing must stay linear in their length.
+  const huge = 100_000;
+  const inputs = [
+    "%".repeat(huge),
+    "%\n".repeat(huge / 2),
+    `::1${"%".repeat(huge)}`,
+    `fe80::1%${"%".repeat(huge)}`,
+    "9".repeat(huge),
+    `::${"9".repeat(huge)}`,
+    `::1.${"9".repeat(huge)}`,
+    `${"9.".repeat(huge / 2)}9`,
+    `[${":".repeat(huge)}]`,
+    `${"1.2.3.4, ".repeat(huge / 9)}`,
+    `for=${"%".repeat(huge)}`,
+    `${";for=".repeat(huge / 5)}`,
+  ];
+  const trusted = parseTrustedProxies(["10.0.0.0/8"]);
+
+  it("returns unknown for a 100 KB address in well under 50 ms", () => {
+    for (const input of inputs) {
+      const started = performance.now();
+      expect(ipLimitKey(input)).toBe("unknown");
+      expect(performance.now() - started).toBeLessThan(50);
+    }
+  });
+
+  it("walks 100 KB forwarding headers in well under 50 ms", () => {
+    for (const input of inputs)
+      for (const header of ["x-forwarded-for", "forwarded"] as const) {
+        const started = performance.now();
+        const client = resolveClientIp({
+          peer: "10.0.0.2",
+          trusted,
+          header,
+          forwarded: input,
+          xForwardedFor: input,
+        });
+        expect(performance.now() - started).toBeLessThan(50);
+        // Nothing parseable at the right: the proxy itself, or the last
+        // well-formed hop of a repeated list.
+        expect(["10.0.0.2", "1.2.3.4"]).toContain(client);
+      }
   });
 });
 
@@ -118,22 +168,70 @@ describe("resolveClientIp", () => {
     ).toBe("10.0.0.1");
   });
 
-  it("prefers Forwarded, with quoted IPv6, ports and obfuscated hops", () => {
-    expect(
-      resolveClientIp({
-        peer: "2001:db8:ffff::2",
-        trusted,
-        forwarded:
-          'for=1.2.3.4;proto=https, for="[2001:db8:1:2::7]:4711";by=10.0.0.1, For=10.0.0.3',
-        xForwardedFor: "9.9.9.9",
-      }),
-    ).toBe("2001:0db8:0001:0002:0000:0000:0000:0007");
+  it("reads X-Forwarded-For by default and ignores a client-written Forwarded", () => {
     expect(
       resolveClientIp({
         peer: "10.0.0.2",
         trusted,
-        forwarded: "for=_hidden, for=10.0.0.3",
+        forwarded: "for=6.6.6.6",
+        xForwardedFor: "203.0.113.7",
       }),
-    ).toBe("10.0.0.3");
+    ).toBe("203.0.113.7");
+    expect(
+      resolveClientIp({ peer: "10.0.0.2", trusted, forwarded: "for=6.6.6.6" }),
+    ).toBe("10.0.0.2");
+  });
+
+  it("reads only Forwarded when configured, with quoted IPv6, ports and obfuscated hops", () => {
+    const forwarded = (value: string, peer = "10.0.0.2") =>
+      resolveClientIp({
+        peer,
+        trusted,
+        header: "forwarded",
+        forwarded: value,
+        xForwardedFor: "9.9.9.9",
+      });
+    expect(
+      forwarded(
+        'for=1.2.3.4;proto=https, for="[2001:db8:1:2::7]:4711";by=10.0.0.1, For=10.0.0.3',
+        "2001:db8:ffff::2",
+      ),
+    ).toBe("2001:0db8:0001:0002:0000:0000:0000:0007");
+    expect(forwarded("for=_hidden, for=10.0.0.3")).toBe("10.0.0.3");
+    // X-Forwarded-For is ignored in this mode.
+    expect(
+      resolveClientIp({
+        peer: "10.0.0.2",
+        trusted,
+        header: "forwarded",
+        xForwardedFor: "9.9.9.9",
+      }),
+    ).toBe("10.0.0.2");
+  });
+
+  it("keeps one hop per Forwarded element, and stops at one without a single for", () => {
+    const forwarded = (value: string) =>
+      resolveClientIp({
+        peer: "10.0.0.2",
+        trusted,
+        header: "forwarded",
+        forwarded: value,
+      });
+    // The proxy's own element has no for=: the client-written one to its
+    // left must not become the key.
+    expect(forwarded("for=6.6.6.6, proto=https;by=10.0.0.1")).toBe("10.0.0.2");
+    expect(forwarded("for=6.6.6.6, for=10.0.0.3, host=api.example.com")).toBe(
+      "10.0.0.2",
+    );
+    expect(forwarded("for=6.6.6.6, for=203.0.113.7;for=10.0.0.3")).toBe(
+      "10.0.0.2",
+    );
+    expect(forwarded("for=6.6.6.6, for=nonsense, for=10.0.0.3")).toBe(
+      "10.0.0.3",
+    );
+    expect(forwarded("for=6.6.6.6, for=, for=10.0.0.3")).toBe("10.0.0.3");
+    expect(forwarded("for=6.6.6.6, for=203.0.113.7;proto=https")).toBe(
+      "203.0.113.7",
+    );
   });
 });

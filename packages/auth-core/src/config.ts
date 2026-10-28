@@ -2,8 +2,12 @@ import { z } from "zod";
 import { assertAppId } from "./app-id.js";
 import { AuthConfigError, type ConfigIssue } from "./errors.js";
 import { isValidSchemaName } from "./identifiers.js";
-import type { RateLimitPolicy } from "./rate-limits/index.js";
-import { parseTrustedProxies } from "./rate-limits/ip.js";
+import {
+  parseTrustedProxies,
+  TRUSTED_PROXY_HEADERS,
+  type TrustedProxyHeader,
+} from "./rate-limits/ip.js";
+import type { RateLimitPolicy } from "./rate-limits/policy.js";
 import { isHttpsUrl, isValidRedirectUri } from "./redirect-uris.js";
 import { isRole, ROLES, type Role, type RoleMap } from "./roles.js";
 
@@ -89,10 +93,16 @@ export interface AuthConfig {
   readonly rateLimits: {
     /**
      * `<APP>_TRUSTED_PROXIES`: CIDRs of the proxies in front of the API,
-     * whose `X-Forwarded-For` or `Forwarded` headers are believed. Empty by
-     * default: the socket peer is the client.
+     * whose forwarding header is believed. Empty by default: the socket
+     * peer is the client.
      */
     readonly trustedProxies: readonly string[];
+    /**
+     * `<APP>_TRUSTED_PROXY_HEADER`: the one forwarding header the trusted
+     * proxies set, `x-forwarded-for` (default) or `forwarded` (RFC 7239).
+     * The other is ignored.
+     */
+    readonly proxyHeader: TrustedProxyHeader;
     /** `<APP>_RATE_LIMITS`: policies that replace the defaults, by name. */
     readonly policies: Readonly<Record<string, RateLimitPolicy>>;
   };
@@ -149,7 +159,8 @@ function parseRateLimits(
   const example = '{"oauth.token.ip":{"limit":300,"periodSeconds":60}}';
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return `must be a JSON object from policy name to a policy, such as ${example}`;
-  const out: Record<string, RateLimitPolicy> = {};
+  // A null prototype, so that no name resolves to an Object.prototype member.
+  const out = Object.create(null) as Record<string, RateLimitPolicy>;
   const whole = (n: unknown, max: number): n is number =>
     typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= max;
   for (const [name, entry] of Object.entries(value)) {
@@ -530,6 +541,22 @@ const fields = z
         }
         return entries;
       }),
+    TRUSTED_PROXY_HEADER: z
+      .string(required("x-forwarded-for or forwarded"))
+      .default("x-forwarded-for")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        const header = TRUSTED_PROXY_HEADERS.find((h) => h === normalised);
+        if (!header) {
+          ctx.addIssue({
+            code: "custom",
+            message:
+              "must be x-forwarded-for (the default) or forwarded, the header your trusted proxies set",
+          });
+          return z.NEVER;
+        }
+        return header;
+      }),
     RATE_LIMITS: z
       .string(required("a JSON object"))
       .default("{}")
@@ -697,6 +724,7 @@ export function loadAuthConfig(
     }),
     rateLimits: Object.freeze({
       trustedProxies: Object.freeze(v.TRUSTED_PROXIES),
+      proxyHeader: v.TRUSTED_PROXY_HEADER,
       policies: v.RATE_LIMITS,
     }),
     apiKeys: Object.freeze({

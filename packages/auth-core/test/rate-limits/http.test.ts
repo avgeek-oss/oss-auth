@@ -561,6 +561,65 @@ describe.skipIf(!databaseUrl)("rate limits over HTTP", () => {
     expect((await signIn(strict, "198.51.100.2")).status).toBe(429);
   });
 
+  it("reads only the configured forwarding header, so a spoofed Forwarded is ignored", async () => {
+    const signIn = (s: Stack, headers: Record<string, string>) =>
+      fetch(`${s.api}/auth/sign-in`, { redirect: "manual", headers });
+    // The default, x-forwarded-for: a client-written Forwarded changes
+    // nothing, with or without X-Forwarded-For.
+    const xff = await mcp(
+      { oidc: per(1) },
+      { env: { POSTED_TRUSTED_PROXIES: "127.0.0.1" } },
+    );
+    expect(
+      (
+        await signIn(xff, {
+          "x-forwarded-for": "198.51.100.1",
+          forwarded: "for=6.6.6.1",
+        })
+      ).status,
+    ).toBe(302);
+    expect(
+      (
+        await signIn(xff, {
+          "x-forwarded-for": "198.51.100.1",
+          forwarded: "for=6.6.6.2",
+        })
+      ).status,
+    ).toBe(429);
+    expect((await signIn(xff, { forwarded: "for=6.6.6.3" })).status).toBe(302);
+    expect((await signIn(xff, { forwarded: "for=6.6.6.4" })).status).toBe(429);
+
+    // forwarded: X-Forwarded-For is ignored instead.
+    const rfc = await mcp(
+      { oidc: per(1) },
+      {
+        env: {
+          POSTED_TRUSTED_PROXIES: "127.0.0.1",
+          POSTED_TRUSTED_PROXY_HEADER: "forwarded",
+        },
+      },
+    );
+    expect(
+      (
+        await signIn(rfc, {
+          forwarded: "for=198.51.100.1",
+          "x-forwarded-for": "6.6.6.1",
+        })
+      ).status,
+    ).toBe(302);
+    expect(
+      (
+        await signIn(rfc, {
+          forwarded: "for=198.51.100.1",
+          "x-forwarded-for": "6.6.6.2",
+        })
+      ).status,
+    ).toBe(429);
+    expect(
+      (await signIn(rfc, { forwarded: 'for="[2001:db8::1]:4711"' })).status,
+    ).toBe(302);
+  });
+
   it("lets apps limit their own routes with the same store", async () => {
     const s = await startStack({
       mount: (app, { auth }) => {
