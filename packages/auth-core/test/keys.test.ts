@@ -56,8 +56,8 @@ describe("deriveKey", () => {
       [
         "pässwörd-ünïcode-sécret-ëxämple-ok",
         "towbar",
-        "break-glass",
-        "9fbb4cfc8a2b660716480b52da98b5d5860f87c6bbcc343e06a4f687b4ca134e",
+        "oidc-transaction",
+        "05d16691665386c2c174655e008a220396812167420aec4c98f1355d692b2788",
       ],
     ];
     for (const [secret, app, label, hex] of vectors)
@@ -101,7 +101,6 @@ describe("deriveKey", () => {
       "oauth-access-token",
       "oauth-refresh-token",
       "idempotency",
-      "break-glass",
       "oauth-request",
       "rate-limit",
     ]);
