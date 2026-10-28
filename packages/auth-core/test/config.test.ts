@@ -1,0 +1,433 @@
+import { inspect } from "node:util";
+import { describe, expect, it } from "vitest";
+import {
+  AuthConfigError,
+  authEnvNames,
+  DEFAULT_ROLE_MAP_VALUES,
+  loadAuthConfig,
+  parseDuration,
+  type ConfigIssue,
+} from "../src/index.js";
+
+const SECRET = "s".repeat(32);
+const SCIM_TOKEN = "t".repeat(32);
+
+const base = {
+  POSTED_SECRET: SECRET,
+  POSTED_OIDC_ISSUER: "https://auth.example.com/application/o/posted/",
+  POSTED_OIDC_CLIENT_ID: "posted",
+  POSTED_OIDC_CLIENT_SECRET: "client-secret",
+  POSTED_WEB_ORIGIN: "https://posted.example.com",
+  POSTED_API_ORIGIN: "https://api.posted.example.com",
+};
+
+function issues(env: Record<string, string | undefined>): ConfigIssue[] {
+  try {
+    loadAuthConfig("posted", env);
+  } catch (error) {
+    expect(error).toBeInstanceOf(AuthConfigError);
+    return [...(error as AuthConfigError).issues];
+  }
+  throw new Error("expected the configuration to be rejected");
+}
+
+const variables = (env: Record<string, string | undefined>) =>
+  issues(env).map((issue) => issue.variable);
+
+describe("loadAuthConfig", () => {
+  it("reads a minimal configuration and fills the defaults", () => {
+    const config = loadAuthConfig("posted", base);
+    expect({ ...config }).toEqual({
+      app: "posted",
+      secret: SECRET,
+      oidc: {
+        issuer: "https://auth.example.com/application/o/posted/",
+        clientId: "posted",
+        clientSecret: "client-secret",
+        roleMap: { claims: ["roles"], values: DEFAULT_ROLE_MAP_VALUES },
+      },
+      scim: { tokens: [] },
+      origins: {
+        web: "https://posted.example.com",
+        api: "https://api.posted.example.com",
+      },
+      session: { maxAgeSeconds: 12 * 3600, idleTimeoutSeconds: 2 * 3600 },
+      schema: "auth",
+    });
+    expect(DEFAULT_ROLE_MAP_VALUES).toEqual({
+      viewer: "viewer",
+      member: "member",
+      admin: "admin",
+    });
+  });
+
+  it("reads every optional variable", () => {
+    const config = loadAuthConfig("posted", {
+      ...base,
+      POSTED_OIDC_ROLE_CLAIMS: " groups , roles ",
+      POSTED_OIDC_ROLE_MAP: JSON.stringify({
+        "posted-admins": "admin",
+        "posted-members": "member",
+      }),
+      POSTED_SCIM_TOKENS: `${SCIM_TOKEN}, ${"u".repeat(40)}`,
+      POSTED_SESSION_MAX_AGE: "7d",
+      POSTED_SESSION_IDLE_TIMEOUT: "900",
+      POSTED_AUTH_SCHEMA: "Posted Auth",
+    });
+    expect(config.oidc.roleMap).toEqual({
+      claims: ["groups", "roles"],
+      values: { "posted-admins": "admin", "posted-members": "member" },
+    });
+    expect(config.scim.tokens).toEqual([SCIM_TOKEN, "u".repeat(40)]);
+    expect(config.session).toEqual({
+      maxAgeSeconds: 7 * 86400,
+      idleTimeoutSeconds: 900,
+    });
+    expect(config.schema).toBe("Posted Auth");
+  });
+
+  it("uses the app id as the variable prefix", () => {
+    expect(authEnvNames("vitalog")).toMatchObject({
+      SECRET: "VITALOG_SECRET",
+      OIDC_ROLE_MAP: "VITALOG_OIDC_ROLE_MAP",
+      AUTH_SCHEMA: "VITALOG_AUTH_SCHEMA",
+    });
+    const env = Object.fromEntries(
+      Object.entries(base).map(([k, v]) => [
+        k.replace("POSTED_", "VITALOG_"),
+        v,
+      ]),
+    );
+    expect(loadAuthConfig("vitalog", env).app).toBe("vitalog");
+    expect(() => loadAuthConfig("vitalog", base)).toThrow(AuthConfigError);
+  });
+
+  it("rejects an invalid app id as a programming error", () => {
+    expect(() => loadAuthConfig("Posted", base)).toThrow(TypeError);
+    expect(() => authEnvNames("my-app")).toThrow(TypeError);
+  });
+
+  it("names every missing required variable at once", () => {
+    expect(issues({})).toEqual([
+      {
+        variable: "POSTED_SECRET",
+        message: expect.stringMatching(/^is required/),
+      },
+      {
+        variable: "POSTED_OIDC_ISSUER",
+        message: expect.stringMatching(/^is required/),
+      },
+      {
+        variable: "POSTED_OIDC_CLIENT_ID",
+        message: expect.stringMatching(/^is required/),
+      },
+      {
+        variable: "POSTED_OIDC_CLIENT_SECRET",
+        message: expect.stringMatching(/^is required/),
+      },
+      {
+        variable: "POSTED_WEB_ORIGIN",
+        message: expect.stringMatching(/^is required/),
+      },
+      {
+        variable: "POSTED_API_ORIGIN",
+        message: expect.stringMatching(/^is required/),
+      },
+    ]);
+  });
+
+  it("treats empty values as unset", () => {
+    expect(variables({ ...base, POSTED_SECRET: "" })).toEqual([
+      "POSTED_SECRET",
+    ]);
+    expect(
+      loadAuthConfig("posted", { ...base, POSTED_AUTH_SCHEMA: "" }).schema,
+    ).toBe("auth");
+  });
+
+  it("puts every variable name in the message, never a value", () => {
+    const env = {
+      ...base,
+      POSTED_SECRET: "short-secret-value",
+      POSTED_SCIM_TOKENS: "tiny-token-value",
+    };
+    let message = "";
+    try {
+      loadAuthConfig("posted", env);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/^Invalid auth configuration:\n- POSTED_SECRET: /);
+    expect(message).toContain("- POSTED_SCIM_TOKENS: ");
+    expect(message).not.toContain("short-secret-value");
+    expect(message).not.toContain("tiny-token-value");
+  });
+
+  describe("secret", () => {
+    it("needs at least 32 bytes", () => {
+      expect(variables({ ...base, POSTED_SECRET: "s".repeat(31) })).toEqual([
+        "POSTED_SECRET",
+      ]);
+      expect(
+        loadAuthConfig("posted", { ...base, POSTED_SECRET: "s".repeat(32) })
+          .secret,
+      ).toHaveLength(32);
+    });
+
+    it("counts bytes, not characters", () => {
+      // 16 characters, 32 bytes in UTF-8.
+      expect(
+        loadAuthConfig("posted", { ...base, POSTED_SECRET: "é".repeat(16) })
+          .secret,
+      ).toBe("é".repeat(16));
+      expect(variables({ ...base, POSTED_SECRET: "é".repeat(15) })).toEqual([
+        "POSTED_SECRET",
+      ]);
+    });
+  });
+
+  describe("OIDC", () => {
+    it("keeps the issuer exactly as written", () => {
+      for (const issuer of [
+        "https://accounts.google.com",
+        "https://auth.example.com/application/o/posted/",
+        "https://login.microsoftonline.com/7f1d8c11-0000-4000-8000-000000000000/v2.0",
+        "http://localhost:9000",
+      ])
+        expect(
+          loadAuthConfig("posted", { ...base, POSTED_OIDC_ISSUER: issuer }).oidc
+            .issuer,
+        ).toBe(issuer);
+    });
+
+    it("rejects issuers that are not plain HTTPS URLs", () => {
+      for (const issuer of [
+        "auth.example.com",
+        "http://auth.example.com",
+        "https://auth.example.com/?tenant=1",
+        "https://auth.example.com/#x",
+        "https://user:pass@auth.example.com",
+        "https://Auth.Example.com",
+        "https://auth.example.com:443/o/",
+        "ftp://auth.example.com",
+      ])
+        expect(variables({ ...base, POSTED_OIDC_ISSUER: issuer })).toEqual([
+          "POSTED_OIDC_ISSUER",
+        ]);
+    });
+
+    it("rejects a blank client id", () => {
+      expect(variables({ ...base, POSTED_OIDC_CLIENT_ID: "   " })).toEqual([
+        "POSTED_OIDC_CLIENT_ID",
+      ]);
+    });
+
+    it("needs at least one role claim", () => {
+      expect(variables({ ...base, POSTED_OIDC_ROLE_CLAIMS: " , " })).toEqual([
+        "POSTED_OIDC_ROLE_CLAIMS",
+      ]);
+    });
+
+    it("rejects role maps that are not objects of roles", () => {
+      for (const map of [
+        "not json",
+        "[]",
+        "null",
+        '"admin"',
+        "{}",
+        '{"posted-admins":"owner"}',
+        '{"posted-admins":"Admin"}',
+        '{" ":"admin"}',
+        '{"posted-admins":["admin"]}',
+      ])
+        expect(variables({ ...base, POSTED_OIDC_ROLE_MAP: map })).toEqual([
+          "POSTED_OIDC_ROLE_MAP",
+        ]);
+    });
+  });
+
+  describe("SCIM tokens", () => {
+    it("rejects short, spaced or repeated tokens", () => {
+      for (const tokens of [
+        "t".repeat(31),
+        `${SCIM_TOKEN},short`,
+        `${"t".repeat(20)} ${"t".repeat(20)}`,
+        `${SCIM_TOKEN},${SCIM_TOKEN}`,
+      ])
+        expect(variables({ ...base, POSTED_SCIM_TOKENS: tokens })).toEqual([
+          "POSTED_SCIM_TOKENS",
+        ]);
+    });
+  });
+
+  describe("origins", () => {
+    it("normalises origins", () => {
+      const config = loadAuthConfig("posted", {
+        ...base,
+        POSTED_WEB_ORIGIN: "HTTPS://Posted.Example.com:443/",
+        POSTED_API_ORIGIN: "http://localhost:3001",
+      });
+      expect(config.origins).toEqual({
+        web: "https://posted.example.com",
+        api: "http://localhost:3001",
+      });
+    });
+
+    it("rejects anything but a bare HTTPS or loopback origin", () => {
+      for (const value of [
+        "posted.example.com",
+        "http://posted.example.com",
+        "https://posted.example.com/app",
+        "https://posted.example.com/?x=1",
+        "https://posted.example.com/#top",
+        "https://user@posted.example.com",
+        "ws://localhost:3000",
+      ]) {
+        expect(variables({ ...base, POSTED_WEB_ORIGIN: value })).toEqual([
+          "POSTED_WEB_ORIGIN",
+        ]);
+        expect(variables({ ...base, POSTED_API_ORIGIN: value })).toEqual([
+          "POSTED_API_ORIGIN",
+        ]);
+      }
+    });
+
+    it("accepts every loopback host for development", () => {
+      for (const value of [
+        "http://localhost:5173",
+        "http://127.0.0.1:8080",
+        "http://[::1]:3000",
+      ])
+        expect(
+          loadAuthConfig("posted", { ...base, POSTED_WEB_ORIGIN: value })
+            .origins.web,
+        ).toBe(value);
+    });
+  });
+
+  describe("session lengths", () => {
+    it("enforces the bounds", () => {
+      expect(variables({ ...base, POSTED_SESSION_MAX_AGE: "299" })).toEqual([
+        "POSTED_SESSION_MAX_AGE",
+      ]);
+      expect(variables({ ...base, POSTED_SESSION_MAX_AGE: "31d" })).toEqual([
+        "POSTED_SESSION_MAX_AGE",
+      ]);
+      expect(
+        variables({
+          ...base,
+          POSTED_SESSION_MAX_AGE: "1h",
+          POSTED_SESSION_IDLE_TIMEOUT: "59s",
+        }),
+      ).toEqual(["POSTED_SESSION_IDLE_TIMEOUT"]);
+      expect(
+        loadAuthConfig("posted", {
+          ...base,
+          POSTED_SESSION_MAX_AGE: "300",
+          POSTED_SESSION_IDLE_TIMEOUT: "60",
+        }).session,
+      ).toEqual({ maxAgeSeconds: 300, idleTimeoutSeconds: 60 });
+    });
+
+    it("rejects an idle timeout longer than the max age", () => {
+      expect(
+        issues({
+          ...base,
+          POSTED_SESSION_MAX_AGE: "1h",
+          POSTED_SESSION_IDLE_TIMEOUT: "2h",
+        }),
+      ).toEqual([
+        {
+          variable: "POSTED_SESSION_IDLE_TIMEOUT",
+          message: "must not be longer than the session max age",
+        },
+      ]);
+    });
+
+    it("rejects malformed durations", () => {
+      for (const value of ["12 hours", "1.5h", "-1", "1w", "h", "1hh"])
+        expect(variables({ ...base, POSTED_SESSION_MAX_AGE: value })).toEqual([
+          "POSTED_SESSION_MAX_AGE",
+        ]);
+    });
+  });
+
+  describe("schema", () => {
+    it("accepts names that need quoting", () => {
+      for (const schema of [
+        "auth",
+        "posted_auth",
+        "Posted Auth",
+        'odd"name',
+        "ä".repeat(31),
+      ])
+        expect(
+          loadAuthConfig("posted", { ...base, POSTED_AUTH_SCHEMA: schema })
+            .schema,
+        ).toBe(schema);
+    });
+
+    it("rejects reserved, padded, overlong and control-character names", () => {
+      for (const schema of [
+        "pg_auth",
+        "PG_x",
+        " auth",
+        "auth ",
+        "a".repeat(64),
+        "ä".repeat(32),
+        "au\nth",
+        "au\u0000th",
+      ])
+        expect(variables({ ...base, POSTED_AUTH_SCHEMA: schema })).toEqual([
+          "POSTED_AUTH_SCHEMA",
+        ]);
+    });
+  });
+
+  it("freezes the result and redacts secrets when logged", () => {
+    const config = loadAuthConfig("posted", {
+      ...base,
+      POSTED_SCIM_TOKENS: SCIM_TOKEN,
+    });
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(Object.isFrozen(config.oidc)).toBe(true);
+    expect(Object.isFrozen(config.oidc.roleMap.claims)).toBe(true);
+    expect(Object.isFrozen(config.scim.tokens)).toBe(true);
+    for (const text of [
+      JSON.stringify(config),
+      inspect(config, { depth: 5 }),
+    ]) {
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain("client-secret");
+      expect(text).not.toContain(SCIM_TOKEN);
+      expect(text).toContain("[redacted]");
+      expect(text).toContain("https://posted.example.com");
+    }
+    expect(config.secret).toBe(SECRET);
+  });
+});
+
+describe("parseDuration", () => {
+  it("reads seconds and unit suffixes", () => {
+    expect(parseDuration("0")).toBe(0);
+    expect(parseDuration("90")).toBe(90);
+    expect(parseDuration("90s")).toBe(90);
+    expect(parseDuration("15m")).toBe(900);
+    expect(parseDuration(" 12h ")).toBe(43200);
+    expect(parseDuration("30d")).toBe(2592000);
+  });
+
+  it("returns null for anything else", () => {
+    for (const value of [
+      "",
+      "m",
+      "1.5h",
+      "-5",
+      "5 m",
+      "5M",
+      "1y",
+      "1234567890",
+    ])
+      expect(parseDuration(value)).toBeNull();
+  });
+});
