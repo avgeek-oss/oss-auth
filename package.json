@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/oidc-provider": "9.12.1",
     "@types/pg": "^8.23.1",
     "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
