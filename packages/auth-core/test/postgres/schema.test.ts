@@ -471,6 +471,171 @@ describe.skipIf(!databaseUrl).each(adapters)(
       });
     });
 
+    describe("0005", () => {
+      const client = async (id = `client-${randomUUID()}`) => {
+        await sql.query(
+          `INSERT INTO ${t("oauth_clients")} (client_id, kind, client_name, redirect_uris)
+           VALUES ($1, 'configured', 'CLI', ARRAY['http://127.0.0.1/cb'])`,
+          [id],
+        );
+        return id;
+      };
+      const grant = async (
+        userId: string,
+        clientId: string,
+        ceiling = "viewer",
+      ) => {
+        const [row] = await sql.query<{ id: string }>(
+          `INSERT INTO ${t("oauth_grants")} (user_id, client_id, client_name, ceiling, resources)
+           VALUES ($1, $2, 'CLI', $3, ARRAY['https://api.example.com/mcp']) RETURNING id`,
+          [userId, clientId, ceiling],
+        );
+        return row?.id ?? "";
+      };
+      const hex = () => randomBytes(32).toString("hex");
+
+      it("keeps clients' kinds and cache expiry consistent", async () => {
+        const id = await client();
+        await fails(
+          `UPDATE ${t("oauth_clients")} SET kind = 'dynamic' WHERE client_id = $1`,
+          [id],
+        );
+        await fails(
+          `INSERT INTO ${t("oauth_clients")} (client_id, kind, client_name, redirect_uris)
+           VALUES ('https://a.example.com/c.json', 'metadata', 'A', ARRAY['https://a.example.com/cb'])`,
+        );
+        await fails(
+          `INSERT INTO ${t("oauth_clients")} (client_id, kind, client_name, redirect_uris)
+           VALUES ('x', 'configured', 'A', ARRAY[]::text[])`,
+        );
+      });
+
+      it("gives grants only to active users with a role, and never changes them", async () => {
+        const c = await client();
+        const owner = await createUser({ role: "member" });
+        const id = await grant(owner, c);
+        await expect(grant(await createUser(), c)).rejects.toThrow(
+          /cannot get a grant/,
+        );
+        for (const change of [
+          "ceiling = 'admin'",
+          "resources = ARRAY['https://api.example.com/v1']",
+          `restrictions = '{"boards":[1]}'::jsonb`,
+          `user_id = '${await createUser({ role: "member" })}'`,
+        ])
+          await fails(
+            `UPDATE ${t("oauth_grants")} SET ${change} WHERE id = $1`,
+            [id],
+          );
+        await sql.query(
+          `UPDATE ${t("oauth_grants")} SET revoked_at = now() WHERE id = $1`,
+          [id],
+        );
+        await fails(
+          `UPDATE ${t("oauth_grants")} SET revoked_at = NULL WHERE id = $1`,
+          [id],
+          /stays revoked/,
+        );
+        await fails(
+          `INSERT INTO ${t("oauth_grants")} (user_id, client_id, client_name, ceiling, resources, restrictions)
+           VALUES ($1, $2, 'CLI', 'viewer', ARRAY['x'], '[1]'::jsonb)`,
+          [owner, c],
+        );
+      });
+
+      it("revokes grants on deactivation and above a lowered role, but not on NULL", async () => {
+        const c = await client();
+        const owner = await createUser({ role: "admin" });
+        for (const ceiling of ["viewer", "member", "admin"])
+          await grant(owner, c, ceiling);
+        const revoked = async () =>
+          (
+            await sql.query<{ ceiling: string }>(
+              `SELECT ceiling FROM ${t("oauth_grants")}
+               WHERE user_id = $1 AND revoked_at IS NOT NULL ORDER BY ceiling`,
+              [owner],
+            )
+          ).map((r) => r.ceiling);
+        await sql.query(`UPDATE ${t("users")} SET role = NULL WHERE id = $1`, [
+          owner,
+        ]);
+        expect(await revoked()).toEqual([]);
+        await sql.query(
+          `UPDATE ${t("users")} SET role = 'member' WHERE id = $1`,
+          [owner],
+        );
+        expect(await revoked()).toEqual(["admin"]);
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now() WHERE id = $1`,
+          [owner],
+        );
+        expect(await revoked()).toEqual(["admin", "member", "viewer"]);
+      });
+
+      it("consumes codes once and rotates tokens once, and revocation is final", async () => {
+        const c = await client();
+        const g = await grant(await createUser({ role: "viewer" }), c);
+        const code = hex();
+        await sql.query(
+          `INSERT INTO ${t("oauth_codes")} (code_hash, grant_id, client_id, redirect_uri, resource,
+             code_challenge, expires_at)
+           VALUES ($1, $2, $3, 'http://127.0.0.1/cb', 'r', $4, now() + interval '60 seconds')`,
+          [code, g, c, "a".repeat(43)],
+        );
+        await sql.query(
+          `UPDATE ${t("oauth_codes")} SET consumed_at = now() WHERE code_hash = $1`,
+          [code],
+        );
+        await fails(
+          `UPDATE ${t("oauth_codes")} SET consumed_at = now() + interval '1 second' WHERE code_hash = $1`,
+          [code],
+          /consumed once/,
+        );
+        await fails(
+          `UPDATE ${t("oauth_codes")} SET redirect_uri = 'https://evil' WHERE code_hash = $1`,
+          [code],
+          /consumed once/,
+        );
+        const token = hex();
+        await sql.query(
+          `INSERT INTO ${t("oauth_tokens")} (token_hash, kind, grant_id, family_id, resource,
+             expires_at, family_expires_at)
+           VALUES ($1, 'refresh', $2, gen_random_uuid(), 'r', now() + interval '1 day', now() + interval '2 days')`,
+          [token, g],
+        );
+        await sql.query(
+          `UPDATE ${t("oauth_tokens")} SET rotated_at = now() WHERE token_hash = $1`,
+          [token],
+        );
+        await fails(
+          `UPDATE ${t("oauth_tokens")} SET rotated_at = NULL WHERE token_hash = $1`,
+          [token],
+          /rotates once/,
+        );
+        await sql.query(
+          `UPDATE ${t("oauth_tokens")} SET revoked_at = now() WHERE token_hash = $1`,
+          [token],
+        );
+        await fails(
+          `UPDATE ${t("oauth_tokens")} SET revoked_at = NULL WHERE token_hash = $1`,
+          [token],
+          /stays revoked/,
+        );
+        // An access token has no family limit and never rotates; a refresh
+        // token never outlives its family.
+        await fails(
+          `INSERT INTO ${t("oauth_tokens")} (token_hash, kind, grant_id, family_id, resource, expires_at, family_expires_at)
+           VALUES ($1, 'access', $2, gen_random_uuid(), 'r', now() + interval '1 hour', now() + interval '1 day')`,
+          [hex(), g],
+        );
+        await fails(
+          `INSERT INTO ${t("oauth_tokens")} (token_hash, kind, grant_id, family_id, resource, expires_at, family_expires_at)
+           VALUES ($1, 'refresh', $2, gen_random_uuid(), 'r', now() + interval '3 days', now() + interval '1 day')`,
+          [hex(), g],
+        );
+      });
+    });
+
     describe("0002", () => {
       it("records where a role came from, NULL until something sets it", async () => {
         const id = await createUser();

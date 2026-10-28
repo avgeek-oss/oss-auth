@@ -154,6 +154,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           id: record.id,
           ceiling: "viewer",
           workspace: "w-1",
+          restrictions: null,
         },
         role: "viewer",
         ext: { tier: "member" },

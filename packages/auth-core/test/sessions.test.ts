@@ -106,6 +106,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           id: session.idHash,
           ceiling: null,
           workspace: null,
+          restrictions: null,
         },
         role: "admin",
         ext: { tier: "gold" },

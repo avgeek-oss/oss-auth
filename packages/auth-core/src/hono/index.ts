@@ -132,6 +132,10 @@ export interface Auth<Ext extends object> {
   readonly oidc: OidcClient;
   /** The session cookie's name. */
   readonly sessionCookie: string;
+  /** Where `routes` is mounted, such as `/auth`. */
+  readonly basePath: string;
+  /** The app's `hooks.extendActor`, for actors made elsewhere (MCP tokens). */
+  readonly extendActor: (user: ActorUser) => Promise<Ext>;
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -750,5 +754,10 @@ export function createAuth<Ext extends object = Record<never, never>>(
     apiKeys,
     oidc,
     sessionCookie,
+    basePath,
+    extendActor: async (user) =>
+      options.hooks?.extendActor
+        ? await options.hooks.extendActor(user)
+        : ({} as Ext),
   };
 }

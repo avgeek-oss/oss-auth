@@ -46,6 +46,11 @@
       "types": "./dist/api-keys/index.d.ts",
       "import": "./dist/api-keys/index.js"
     },
+    "./mcp": {
+      "@avgeek-oss/source": "./src/mcp/index.ts",
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
     "./sessions": {
       "@avgeek-oss/source": "./src/sessions/index.ts",
       "types": "./dist/sessions/index.d.ts",

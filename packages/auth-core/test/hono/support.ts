@@ -78,6 +78,16 @@ export interface StackOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly users?: readonly MockUser[];
   readonly auth?: Partial<CreateAuthOptions<{ plan: string }>>;
+  /** Adds routes to the app, after the standard ones. */
+  readonly mount?: (
+    app: Hono,
+    context: {
+      readonly auth: Auth<{ plan: string }>;
+      readonly config: AuthConfig;
+      readonly sql: Sql;
+      readonly now: () => Date;
+    },
+  ) => void;
 }
 
 /** Starts a full stack on the `pg` adapter. */
@@ -139,6 +149,12 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
   app.post("/api/danger", auth.middleware.requireRecentAuth(300), (c) =>
     c.json({ ok: true }),
   );
+  options.mount?.(app, {
+    auth,
+    config,
+    sql,
+    now: () => new Date(Date.now() + offset * 1000),
+  });
   handler = (request) => app.fetch(request);
 
   const browser = createBrowser();

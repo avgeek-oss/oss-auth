@@ -21,6 +21,7 @@ const BUNDLED = [
   "0002_sessions_oidc.sql",
   "0003_scim.sql",
   "0004_api_keys.sql",
+  "0005_oauth.sql",
 ];
 const extra = (
   name: string,
@@ -161,6 +162,11 @@ describe.skipIf(!databaseUrl).each(adapters)(
         expect((await tables("auth")).map((t) => t.name)).toEqual([
           "api_keys",
           "logout_jtis",
+          "oauth_clients",
+          "oauth_codes",
+          "oauth_grants",
+          "oauth_requests",
+          "oauth_tokens",
           "schema_migrations",
           "scim_group_members",
           "scim_groups",
@@ -185,6 +191,11 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect((await tables(schema)).map((t) => t.name)).toEqual([
         "api_keys",
         "logout_jtis",
+        "oauth_clients",
+        "oauth_codes",
+        "oauth_grants",
+        "oauth_requests",
+        "oauth_tokens",
         "schema_migrations",
         "scim_group_members",
         "scim_groups",
@@ -214,12 +225,18 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect(functions.map((f) => f.name)).toEqual([
         "api_keys_before_insert",
         "api_keys_before_update",
+        "oauth_clients_before_update",
+        "oauth_codes_before_update",
+        "oauth_grants_before_insert",
+        "oauth_grants_before_update",
+        "oauth_tokens_before_update",
         "scim_group_members_before_insert",
         "scim_groups_before_update",
         "sessions_before_insert",
         "sessions_before_update",
         "users_before_update",
         "users_revoke_api_keys",
+        "users_revoke_oauth_grants",
         "users_revoke_sessions",
       ]);
       for (const f of functions)

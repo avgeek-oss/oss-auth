@@ -444,6 +444,7 @@ export function createApiKeys<Ext extends object = Record<never, never>>(
             id: key.id,
             ceiling: key.ceiling,
             workspace: key.workspace,
+            restrictions: null,
           },
           ext,
         }),

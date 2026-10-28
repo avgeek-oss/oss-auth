@@ -36,6 +36,13 @@ export function isWellFormedToken(value: unknown): value is string {
  *
  * An HMAC, rather than a plain hash, means a leaked table cannot be checked
  * against guessed tokens without the app secret.
+ *
+ * This is deliberately not a password hash such as Argon2 or scrypt, which
+ * code scanners may suggest. Those slow down guessing of low-entropy,
+ * human-chosen secrets. Every value hashed here is machine-generated with at
+ * least 256 bits of entropy (sessions, API key secrets, OAuth codes and
+ * tokens), so guessing is already infeasible, and a fast keyed hash keeps
+ * each request's lookup cheap.
  */
 export function hashToken(key: Uint8Array, token: string): string {
   if (key.byteLength < 32)

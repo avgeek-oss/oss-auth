@@ -210,6 +210,7 @@ export function createSessions<Ext extends object = Record<never, never>>(
             id: idHash,
             ceiling: null,
             workspace: null,
+            restrictions: null,
           },
           ext,
         }),

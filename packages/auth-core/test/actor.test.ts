@@ -43,6 +43,7 @@ describe("createActor", () => {
         id: "01JBX5E8W6TGGDFXR9NB7QH4PC",
         ceiling: "admin",
         workspace: "w1",
+        restrictions: null,
       },
       ext: { workspaceId: "w1" },
     });
@@ -59,6 +60,7 @@ describe("createActor", () => {
         id: "a".repeat(64),
         ceiling: null,
         workspace: null,
+        restrictions: null,
       },
     });
     expect(actor.role).toBe("admin");
@@ -73,6 +75,7 @@ describe("createActor", () => {
         id: "grant-1",
         ceiling: "viewer",
         workspace: null,
+        restrictions: null,
       },
     });
     expect(actor.role).toBe("viewer");
