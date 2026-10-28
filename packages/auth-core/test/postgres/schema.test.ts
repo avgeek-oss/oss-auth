@@ -437,7 +437,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
         );
       });
 
-      it("revokes keys on deactivation and above a lowered role, in the same statement", async () => {
+      it("revokes keys on deactivation and above a lowered role, but not on NULL", async () => {
         const owner = await createUser({ role: "admin" });
         const ids = {
           viewer: await insertKey(owner, { ceiling: "viewer" }),
@@ -456,6 +456,11 @@ describe.skipIf(!databaseUrl).each(adapters)(
           `UPDATE ${t("users")} SET role = 'viewer' WHERE id = $1`,
           [owner],
         );
+        expect(await revoked()).toEqual(["admin", "member"]);
+        // A NULL role suspends: it revokes nothing.
+        await sql.query(`UPDATE ${t("users")} SET role = NULL WHERE id = $1`, [
+          owner,
+        ]);
         expect(await revoked()).toEqual(["admin", "member"]);
         await sql.query(
           `UPDATE ${t("users")} SET active = false, deactivated_at = now() WHERE id = $1`,

@@ -85,11 +85,19 @@ CREATE TRIGGER api_keys_before_update
 BEFORE UPDATE ON api_keys
 FOR EACH ROW EXECUTE FUNCTION api_keys_before_update();
 
--- Deactivating or deleting a user (deletion deactivates too) revokes their
--- keys in the same transaction, as users_revoke_sessions does for sessions.
--- A role change revokes the keys whose ceiling is above the new role, and
--- all of them when the role becomes NULL, so the key list matches what the
--- keys can do. This covers SCIM, sign-in and any change the app makes.
+-- Deactivating or deleting a user (deletion deactivates too) revokes all of
+-- their keys in the same transaction, as users_revoke_sessions does for
+-- sessions. A change to a non-NULL role revokes the keys whose ceiling is
+-- above it, so the key list matches what the keys can do; this covers SCIM,
+-- sign-in and any change the app makes.
+--
+-- A NULL role suspends rather than revokes: keys and sessions are refused
+-- while it lasts and work again when a role returns. Providers move people
+-- between groups in two requests, and removing before adding passes through
+-- NULL. Comparing with the new role alone is enough for a later lower role:
+-- no live key is above the last non-NULL role (keys are issued at or below
+-- it, and lowering it revoked the rest), so admin, NULL, then member still
+-- revokes the admin keys.
 CREATE FUNCTION users_revoke_api_keys() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -99,7 +107,7 @@ BEGIN
     'UPDATE %I.api_keys SET revoked_at = GREATEST(now(), created_at)
      WHERE user_id = $1 AND revoked_at IS NULL
        AND (NOT $2 OR array_position(ARRAY[''viewer'', ''member'', ''admin''], ceiling)
-            > coalesce(array_position(ARRAY[''viewer'', ''member'', ''admin''], $3), 0))',
+            > array_position(ARRAY[''viewer'', ''member'', ''admin''], $3))',
     TG_TABLE_SCHEMA
   ) USING NEW.id, NEW.active, NEW.role;
   RETURN NULL;
@@ -109,5 +117,6 @@ $$;
 CREATE TRIGGER users_revoke_api_keys
 AFTER UPDATE OF active, role ON users
 FOR EACH ROW
-WHEN ((OLD.active AND NOT NEW.active) OR NEW.role IS DISTINCT FROM OLD.role)
+WHEN ((OLD.active AND NOT NEW.active)
+  OR (NEW.role IS DISTINCT FROM OLD.role AND NEW.role IS NOT NULL))
 EXECUTE FUNCTION users_revoke_api_keys();

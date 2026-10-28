@@ -57,9 +57,11 @@ export interface ScimHooks {
   ) => Promise<void> | void;
   /**
    * With `<APP>_ROLE_SOURCE=scim`, a user's role changed because their
-   * groups changed. `null` means no role: the user lost access and their
-   * sessions are already revoked. API keys above `to` are already revoked
-   * by the schema; revoke other credentials above `to` here.
+   * groups changed. `null` means no role: the user has no access until a
+   * mapped group returns, and their sessions and API keys are refused
+   * meanwhile but not revoked. When `to` is a role, API keys above it are
+   * already revoked by the schema; revoke other credentials above `to`
+   * here.
    */
   readonly onRoleChange?: (
     userId: string,
@@ -368,7 +370,6 @@ export function createScim(options: CreateScimOptions): Hono {
         `UPDATE ${users} SET role = $2, role_source = 'scim' WHERE id = $1`,
         [id, best],
       );
-      if (best === null) await sessions.revokeAll(id, db);
       await hooks.onRoleChange?.(id, from, best, db);
     }
   }

@@ -226,5 +226,106 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect((await t.keys.verify(member))?.actor.role).toBe("member");
       expect((await t.sessions.lookup(token))?.actor.role).toBe("member");
     });
+
+    describe("moving a user between groups in two requests", () => {
+      for (const order of ["remove first", "add first"] as const)
+        it(`revokes only keys above the final role (${order})`, async () => {
+          const t = await setUp(adapter);
+          const ada = await t.user("ada");
+          const grace = await t.user("grace");
+          const admins = await t.group("posted-admins", [ada, grace]);
+          const members = await t.group("posted-members", [grace]);
+          const admin = await t.issue(ada, "admin");
+          const member = await t.issue(ada, "member");
+          const viewer = await t.issue(ada, "viewer");
+          const token = await t.signIn(ada);
+
+          const remove = () =>
+            t.s.json(
+              "PUT",
+              `/Groups/${admins}`,
+              t.groupPut("posted-admins", [grace]),
+            );
+          const add = () =>
+            t.s.json(
+              "PUT",
+              `/Groups/${members}`,
+              t.groupPut("posted-members", [grace, ada]),
+            );
+          if (order === "remove first") {
+            expect((await remove()).status).toBe(200);
+            // In between Ada has no mapped group: suspended, not revoked.
+            expect(
+              (await t.snapshot()).find((u) => u.id === ada)?.role,
+            ).toBeNull();
+            for (const key of [admin, member, viewer])
+              expect(await t.keys.verify(key)).toBeNull();
+            expect(await t.sessions.lookup(token)).toBeNull();
+            expect(await t.keys.list(ada)).toHaveLength(3);
+            expect((await add()).status).toBe(200);
+          } else {
+            expect((await add()).status).toBe(200);
+            expect((await t.keys.verify(admin))?.actor.role).toBe("admin");
+            expect((await remove()).status).toBe(200);
+          }
+
+          expect(await t.keys.verify(admin)).toBeNull();
+          expect((await t.keys.verify(member))?.actor.role).toBe("member");
+          expect((await t.keys.verify(viewer))?.actor.role).toBe("viewer");
+          expect((await t.sessions.lookup(token))?.actor.role).toBe("member");
+          expect((await t.keys.list(ada)).map((k) => k.ceiling).sort()).toEqual(
+            ["member", "viewer"],
+          );
+        });
+    });
+
+    it("refuses keys and sessions while the role is NULL, and restores them with the same role", async () => {
+      const t = await setUp(adapter);
+      const ada = await t.user("ada");
+      const admins = await t.group("posted-admins", [ada]);
+      const keys = [await t.issue(ada, "admin"), await t.issue(ada, "viewer")];
+      const token = await t.signIn(ada);
+
+      await t.s.json(
+        "PUT",
+        `/Groups/${admins}`,
+        t.groupPut("posted-admins", []),
+      );
+      for (const key of keys) expect(await t.keys.verify(key)).toBeNull();
+      expect(await t.sessions.lookup(token)).toBeNull();
+      const [{ revoked } = { revoked: -1 }] = await t.s.rows<{
+        revoked: number;
+      }>(
+        `SELECT (SELECT count(*) FROM {schema}.api_keys WHERE revoked_at IS NOT NULL)
+              + (SELECT count(*) FROM {schema}.sessions WHERE revoked_at IS NOT NULL) AS "revoked"`,
+      );
+      expect(Number(revoked)).toBe(0);
+
+      await t.s.json(
+        "PUT",
+        `/Groups/${admins}`,
+        t.groupPut("posted-admins", [ada]),
+      );
+      expect((await t.keys.verify(keys[0] ?? ""))?.actor.role).toBe("admin");
+      expect((await t.keys.verify(keys[1] ?? ""))?.actor.role).toBe("viewer");
+      expect((await t.sessions.lookup(token))?.actor.role).toBe("admin");
+    });
+
+    it("still revokes everything for good on deactivation", async () => {
+      const t = await setUp(adapter);
+      const ada = await t.user("ada");
+      await t.group("posted-admins", [ada]);
+      const keys = [await t.issue(ada, "admin"), await t.issue(ada, "viewer")];
+      const token = await t.signIn(ada);
+      const { body } = await t.s.json("GET", `/Users/${ada}`);
+      await t.s.json("PUT", `/Users/${ada}`, { ...body, active: false });
+      await t.s.json("PUT", `/Users/${ada}`, { ...body, active: true });
+      expect((await t.snapshot()).find((u) => u.id === ada)?.role).toBe(
+        "admin",
+      );
+      for (const key of keys) expect(await t.keys.verify(key)).toBeNull();
+      expect(await t.sessions.lookup(token)).toBeNull();
+      expect(await t.keys.list(ada)).toEqual([]);
+    });
   },
 );

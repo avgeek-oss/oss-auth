@@ -315,7 +315,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect(count).toBe(2);
     });
 
-    it("revokes keys above a lowered role, and every key when the role goes", async () => {
+    it("revokes keys above a lowered role for good", async () => {
       now = new Date();
       const owner = await user("admin");
       const viewer = await create(owner, "viewer");
@@ -335,10 +335,36 @@ describe.skipIf(!databaseUrl).each(adapters)(
       await setRole(owner, "admin");
       expect(await keys.verify(admin.key)).toBeNull();
       expect((await keys.verify(member.key))?.actor.role).toBe("member");
+      expect((await keys.verify(viewer.key))?.actor.role).toBe("viewer");
+    });
 
+    it("suspends keys while the role is NULL and restores them with the role", async () => {
+      now = new Date();
+      const owner = await user("admin");
+      const ks = {
+        viewer: await create(owner, "viewer"),
+        member: await create(owner, "member"),
+        admin: await create(owner, "admin"),
+      };
       await setRole(owner, null);
-      for (const k of [viewer, member])
-        expect((await stored(k.record.id))?.revoked).toBe(true);
+      for (const k of Object.values(ks)) {
+        expect(await keys.verify(k.key)).toBeNull();
+        expect((await stored(k.record.id))?.revoked).toBe(false);
+      }
+      expect((await refusal(create(owner))).reason).toBe("user");
+      // The same role back: every key works again.
+      await setRole(owner, "admin");
+      for (const k of Object.values(ks))
+        expect((await keys.verify(k.key))?.actor.role).toBe(k.record.ceiling);
+
+      // Admin, then NULL, then member: the admin key is revoked, as if the
+      // role had gone straight from admin to member.
+      await setRole(owner, null);
+      await setRole(owner, "member");
+      expect(await keys.verify(ks.admin.key)).toBeNull();
+      expect((await stored(ks.admin.record.id))?.revoked).toBe(true);
+      expect((await keys.verify(ks.member.key))?.actor.role).toBe("member");
+      expect((await keys.verify(ks.viewer.key))?.actor.role).toBe("viewer");
     });
 
     it("refuses and revokes the keys of a deactivated or deleted owner", async () => {
