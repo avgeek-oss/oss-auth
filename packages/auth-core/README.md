@@ -31,12 +31,12 @@ const sql = fromPg(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
 await migrate(sql, { schema: config.schema });
 
 const auth = createAuth({ config, sql });
-const { actor, trustedOrigin, requireRole, requireRecentAuth } =
+const { cors, actor, trustedOrigin, requireRole, requireRecentAuth } =
   auth.middleware;
 
 const app = new Hono();
 app.route("/auth", auth.routes);
-app.use("/api/*", actor, trustedOrigin);
+app.use("/api/*", cors, actor, trustedOrigin);
 app.post("/api/members", requireRole("admin"), addMember);
 app.delete(
   "/api/workspace",
@@ -62,6 +62,16 @@ The routes, under `/auth` on the API origin:
 | `DELETE /api-keys/:id`      | Revokes one of the caller's keys, or anyone's for an admin.                                                      |
 
 Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "stepUpUrl": "…" } }`. The browser sends `X-Requested-With` on every state-changing request; `trustedOrigin` refuses it otherwise, and refuses any `Origin` but the web origin.
+
+### Pages on another host
+
+When the pages (`<APP>_WEB_ORIGIN`, such as `https://posted.example.com`) and the API (`https://api.posted.example.com`) are different hosts of the same site, the browser needs CORS. `auth.middleware.cors` answers it for the web origin only:
+
+- **Origin.** `Access-Control-Allow-Origin` is the exact web origin, with `Access-Control-Allow-Credentials: true`. Any other origin gets no CORS headers at all: never `*`, and never a reflected `Origin`.
+- **Preflights.** An `OPTIONS` request with `Access-Control-Request-Method` gets a 204 before authentication. It allows `GET`, `POST`, `PUT`, `PATCH` and `DELETE`, with `Content-Type`, the CSRF header, `Idempotency-Key` and `Authorization`, and is cached for 600 seconds.
+- **Responses** expose `Retry-After`, and every response has `Vary: Origin`. Step-up needs no header: `stepUpUrl` is in the JSON body.
+
+`auth.routes` already use it, and so do the connected-apps routes under the same `basePath` and the MCP consent routes. Add it in front of the app's own browser routes, as `/api/*` above. SCIM, `/oauth/token`, `/oauth/revoke`, `/oauth/authorize`, the metadata documents and MCP endpoints have no browser CORS. A proxy that serves the API under the web origin is the alternative, and needs no CORS at all.
 
 ## Configuration
 

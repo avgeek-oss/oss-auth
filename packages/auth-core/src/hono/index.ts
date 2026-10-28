@@ -145,6 +145,24 @@ export interface Auth<Ext extends object> {
      */
     readonly trustedOrigin: MiddlewareHandler<AuthEnv<Ext>>;
     /**
+     * CORS for the app's pages on `<APP>_WEB_ORIGIN`, for an API on another
+     * host of the same site. Only that exact origin is allowed, with
+     * credentials: other origins get no `Access-Control-Allow-Origin`, and
+     * the header is never `*` or a reflected `Origin`. A preflight
+     * (`OPTIONS` with `Access-Control-Request-Method`) is answered here with
+     * 204, before any other middleware, allowing GET, POST, PUT, PATCH and
+     * DELETE with `Content-Type`, the CSRF header, `Idempotency-Key` and
+     * `Authorization`, cached for 10 minutes. Responses expose
+     * `Retry-After`; step-up details are in the JSON body. Every response
+     * varies on `Origin`.
+     *
+     * `routes` (and so the connected-apps routes under `basePath`) and the
+     * MCP consent routes already use it. Add it to the app's own browser
+     * routes, such as `/api/*`, before `actor`. Never add it to SCIM or the
+     * OAuth token endpoints, which browsers do not call.
+     */
+    readonly cors: MiddlewareHandler<AuthEnv<Ext>>;
+    /**
      * Limits requests under the policy `name` (one of the defaults, one set
      * in `<APP>_RATE_LIMITS`, or `fallback`), keyed by the client's IP (the
      * /64 for IPv6) or by what `key` returns; `null` skips the limit. Over
@@ -179,6 +197,7 @@ export interface Auth<Ext extends object> {
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const CORS_METHODS = "GET, POST, PUT, PATCH, DELETE";
 
 /** The JSON body of every auth error response. */
 export interface AuthErrorBody {
@@ -452,7 +471,39 @@ export function createAuth<Ext extends object = Record<never, never>>(
     await next();
   };
 
+  const corsAllowHeaders = [
+    "Content-Type",
+    csrfHeader,
+    "Idempotency-Key",
+    "Authorization",
+  ].join(", ");
+  const cors: MiddlewareHandler<AuthEnv<Ext>> = async (c, next) => {
+    const allowed = c.req.header("origin") === web;
+    const preflight =
+      c.req.method === "OPTIONS" &&
+      c.req.header("access-control-request-method") !== undefined;
+    if (preflight) {
+      c.header("Vary", "Origin", { append: true });
+      if (allowed) {
+        c.header("Access-Control-Allow-Origin", web);
+        c.header("Access-Control-Allow-Credentials", "true");
+        c.header("Access-Control-Allow-Methods", CORS_METHODS);
+        c.header("Access-Control-Allow-Headers", corsAllowHeaders);
+        c.header("Access-Control-Max-Age", "600");
+      }
+      return c.body(null, 204);
+    }
+    await next();
+    c.header("Vary", "Origin", { append: true });
+    if (allowed) {
+      c.header("Access-Control-Allow-Origin", web);
+      c.header("Access-Control-Allow-Credentials", "true");
+      c.header("Access-Control-Expose-Headers", "Retry-After");
+    }
+  };
+
   const routes = new Hono<AuthEnv<Ext>>();
+  routes.use("*", cors);
 
   routes.onError((error, c) => {
     if (error instanceof AuthRequestError) return errorResponse(c, error);
@@ -845,6 +896,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
       requireRole,
       requireRecentAuth,
       trustedOrigin,
+      cors,
       rateLimit,
     },
     sessions,

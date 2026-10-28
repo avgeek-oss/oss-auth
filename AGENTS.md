@@ -28,6 +28,7 @@ Never import app code or add app-specific behaviour here. App-specific data ente
 - Strict TypeScript with `noUncheckedIndexedAccess`. Use `.js` extensions on relative imports and type-only imports for types. The packages ship ESM.
 - Every exported function and type has TSDoc. Errors are `AuthError` subclasses with a stable `code`; messages say what happened and how to fix it, and never contain secret values.
 - Runtime dependencies are limited to `zod`. Database drivers are optional peers, described structurally so their types are not needed.
+- `@avgeek-oss/auth-client` is browser code: no runtime dependencies, no `node:` imports and never an import of `@avgeek-oss/auth-core`. Its wire types mirror auth-core's JSON by hand; change both together, and the contract suite in `examples/hono-vite/test/client.test.ts` fails until they match. Keep it within its bundle budgets.
 - Every behaviour change comes with a test. SQL behaviour is tested against a real Postgres through both adapters. Sign-in behaviour is tested end to end with the mock provider and the cookie-jar browser in `@avgeek-oss/auth-core/testing`; add an attack test with every new check.
 
 ## Verify
