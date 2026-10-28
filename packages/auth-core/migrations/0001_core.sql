@@ -9,14 +9,16 @@
 
 -- A person known to the app through the identity provider. The identity key
 -- is (iss, sub); email is an attribute and is never unique. A user created by
--- SCIM before their first sign-in has external_id but no sub yet.
+-- SCIM before their first sign-in has external_id but no sub yet. role is
+-- NULL while the person has no access: a role only ever comes from the
+-- identity provider.
 CREATE TABLE users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   iss text NOT NULL CHECK (iss <> ''),
   sub text CHECK (sub <> '' AND length(sub) <= 255),
   email text CHECK (email <> '' AND length(email) <= 320),
   display_name text CHECK (length(display_name) <= 256),
-  role text NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'member', 'admin')),
+  role text CHECK (role IN ('viewer', 'member', 'admin')),
   active boolean NOT NULL DEFAULT true,
   external_id text CHECK (external_id <> '' AND length(external_id) <= 255),
   created_at timestamptz NOT NULL DEFAULT now(),

@@ -56,7 +56,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
     });
 
     let counter = 0;
-    async function user(role = "member"): Promise<string> {
+    async function user(role: string | null = "member"): Promise<string> {
       const [row] = await sql.query<{ id: string }>(
         `INSERT INTO ${t("users")} (iss, sub, role, email) VALUES ($1, $2, $3, $4) RETURNING id`,
         [ISS, `s-${++counter}`, role, `u${counter}@example.com`],
@@ -292,6 +292,18 @@ describe.skipIf(!databaseUrl).each(adapters)(
       );
       expect(await sessions.lookup(token)).toBeNull();
       await expect(start(userId)).rejects.toThrow(/not active/);
+    });
+
+    it("hides the session of a user who has no role", async () => {
+      now = new Date();
+      const userId = await user();
+      const { token } = await start(userId);
+      await sql.query(`UPDATE ${t("users")} SET role = NULL WHERE id = $1`, [
+        userId,
+      ]);
+      expect(await sessions.lookup(token)).toBeNull();
+      const { token: other } = await start(await user(null));
+      expect(await sessions.lookup(other)).toBeNull();
     });
 
     it("remembers logout token ids once and cleans up expired ones", async () => {

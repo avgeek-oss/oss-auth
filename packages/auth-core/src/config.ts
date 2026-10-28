@@ -41,7 +41,19 @@ export interface AuthConfig {
      * Empty when SCIM is not configured.
      */
     readonly tokens: readonly string[];
+    /**
+     * `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT`: link a SCIM-provisioned user to
+     * their first sign-in when their `externalId` equals the OIDC `sub`, as
+     * in authentik's hashed-user-id subject mode. Default `false`.
+     */
+    readonly externalIdIsSubject: boolean;
   };
+  /**
+   * `<APP>_ROLE_SOURCE`: where roles come from. `claims` (default) reads the
+   * role claim at sign-in; `scim` derives the role from SCIM group
+   * membership, mapped through `<APP>_OIDC_ROLE_MAP`.
+   */
+  readonly roleSource: "claims" | "scim";
   readonly origins: {
     /** `<APP>_WEB_ORIGIN`, normalised, such as `https://posted.example.com`. */
     readonly web: string;
@@ -275,6 +287,32 @@ const fields = z
         }
         return tokens;
       }),
+    SCIM_EXTERNAL_ID_IS_SUBJECT: z
+      .string(required("true or false"))
+      .default("false")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        if (normalised !== "true" && normalised !== "false") {
+          ctx.addIssue({ code: "custom", message: "must be true or false" });
+          return z.NEVER;
+        }
+        return normalised === "true";
+      }),
+    ROLE_SOURCE: z
+      .string(required("claims or scim"))
+      .default("claims")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        if (normalised !== "claims" && normalised !== "scim") {
+          ctx.addIssue({
+            code: "custom",
+            message:
+              "must be claims (roles from the sign-in role claim) or scim (roles from SCIM groups)",
+          });
+          return z.NEVER;
+        }
+        return normalised as "claims" | "scim";
+      }),
     WEB_ORIGIN: origin,
     API_ORIGIN: origin,
     SESSION_MAX_AGE: duration(300, 30 * 86400, "12h"),
@@ -322,7 +360,10 @@ function redacted(config: AuthConfig) {
     ...config,
     secret: REDACTED,
     oidc: { ...config.oidc, clientSecret: REDACTED },
-    scim: { tokens: config.scim.tokens.map(() => REDACTED) },
+    scim: {
+      ...config.scim,
+      tokens: config.scim.tokens.map(() => REDACTED),
+    },
   };
 }
 
@@ -376,7 +417,11 @@ export function loadAuthConfig(
       }),
       scopes: Object.freeze(v.OIDC_SCOPES),
     },
-    scim: Object.freeze({ tokens: Object.freeze(v.SCIM_TOKENS) }),
+    scim: Object.freeze({
+      tokens: Object.freeze(v.SCIM_TOKENS),
+      externalIdIsSubject: v.SCIM_EXTERNAL_ID_IS_SUBJECT,
+    }),
+    roleSource: v.ROLE_SOURCE,
     origins: Object.freeze({ web: v.WEB_ORIGIN, api: v.API_ORIGIN }),
     session: Object.freeze({
       maxAgeSeconds: v.SESSION_MAX_AGE,

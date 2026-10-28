@@ -8,10 +8,11 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
 | `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
 | `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
+| `@avgeek-oss/auth-core/scim`                  | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                       |
 | `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
 | `@avgeek-oss/auth-core/testing`               | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                   |
 
-SCIM, API keys, the MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+API keys, the MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 

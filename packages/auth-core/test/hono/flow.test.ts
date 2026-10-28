@@ -201,6 +201,7 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
     await s.signIn();
     expect(await role(s)).toBe("admin");
 
+    // Groups that map to nothing take the role away and end the session.
     s.mock.setUser({ sub: "ada", groups: ["unrelated"] });
     expect(failure(await s.signIn()).reason).toBe("no_role");
     expect(
@@ -208,7 +209,15 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
         s,
         `SELECT role, role_source AS "source" FROM {schema}.users WHERE sub = 'ada'`,
       ),
-    ).toEqual([{ role: "admin", source: "oidc" }]);
+    ).toEqual([{ role: null, source: "oidc" }]);
+    expect(await role(s)).toBeUndefined();
+
+    // A missing claim cannot give it back.
+    s.mock.setUser({ sub: "ada" });
+    expect(failure(await s.signIn()).reason).toBe("no_role");
+    s.mock.setUser({ sub: "ada", groups: ["posted-viewers"] });
+    await s.signIn();
+    expect(await role(s)).toBe("viewer");
   });
 
   it("refuses a deactivated or deleted user and ends their sessions", async () => {

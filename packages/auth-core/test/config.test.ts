@@ -47,7 +47,8 @@ describe("loadAuthConfig", () => {
         roleMap: { claims: ["roles"], values: DEFAULT_ROLE_MAP_VALUES },
         scopes: ["openid", "email", "profile"],
       },
-      scim: { tokens: [] },
+      scim: { tokens: [], externalIdIsSubject: false },
+      roleSource: "claims",
       origins: {
         web: "https://posted.example.com",
         api: "https://api.posted.example.com",
@@ -266,6 +267,27 @@ describe("loadAuthConfig", () => {
         expect(variables({ ...base, POSTED_OIDC_SCOPES: scopes })).toEqual([
           "POSTED_OIDC_SCOPES",
         ]);
+    });
+  });
+
+  describe("role source and SCIM linking", () => {
+    it("reads claims or scim, and true or false, in any case", () => {
+      const config = loadAuthConfig("posted", {
+        ...base,
+        POSTED_ROLE_SOURCE: " SCIM ",
+        POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT: "True",
+      });
+      expect(config.roleSource).toBe("scim");
+      expect(config.scim.externalIdIsSubject).toBe(true);
+    });
+
+    it("rejects other values", () => {
+      expect(variables({ ...base, POSTED_ROLE_SOURCE: "groups" })).toEqual([
+        "POSTED_ROLE_SOURCE",
+      ]);
+      expect(
+        variables({ ...base, POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT: "yes" }),
+      ).toEqual(["POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT"]);
     });
   });
 

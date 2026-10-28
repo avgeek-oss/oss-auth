@@ -8,6 +8,7 @@ The server half of Avgeek OSS auth: sign-in through the organisation's OpenID pr
 | `@avgeek-oss/auth-core/postgres` | The `Sql` interface, `fromPg(pool)` and `fromPostgresJs(sql)`, `migrate(sql, { schema })`.                                                 |
 | `@avgeek-oss/auth-core/oidc`     | The relying party (`createOidcClient`), sealed sign-in transactions, `safeReturnTo`, `signInUser`, `verifyLogoutToken`.                    |
 | `@avgeek-oss/auth-core/sessions` | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
+| `@avgeek-oss/auth-core/scim`     | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
 | `@avgeek-oss/auth-core/hono`     | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
 | `@avgeek-oss/auth-core/testing`  | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                             |
 
@@ -59,21 +60,55 @@ Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "st
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                     | Default                | Meaning                                                                         |
-| ---------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
-| `<APP>_SECRET`               | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.     |
-| `<APP>_OIDC_ISSUER`          | required               | The provider's issuer, exactly as its discovery document states it.             |
-| `<APP>_OIDC_CLIENT_ID`       | required               | The client registered for this app.                                             |
-| `<APP>_OIDC_CLIENT_SECRET`   | required               | Its secret. The client authenticates with HTTP Basic.                           |
-| `<APP>_OIDC_SCOPES`          | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.        |
-| `<APP>_OIDC_ROLE_CLAIMS`     | `roles`                | Claims holding roles or groups, comma-separated.                                |
-| `<APP>_OIDC_ROLE_MAP`        | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins. |
-| `<APP>_SCIM_TOKENS`          | unset                  | SCIM bearer tokens, comma-separated (used from the SCIM release).               |
-| `<APP>_WEB_ORIGIN`           | required               | Where the pages live. `returnTo` and `Origin` are checked against it.           |
-| `<APP>_API_ORIGIN`           | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.          |
-| `<APP>_SESSION_MAX_AGE`      | `12h`                  | Absolute session lifetime.                                                      |
-| `<APP>_SESSION_IDLE_TIMEOUT` | `2h`                   | Inactivity limit.                                                               |
-| `<APP>_AUTH_SCHEMA`          | `auth`                 | The Postgres schema for the auth tables.                                        |
+| Variable                            | Default                | Meaning                                                                                      |
+| ----------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                  |
+| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                          |
+| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                          |
+| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                        |
+| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                     |
+| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                             |
+| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.              |
+| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.    |
+| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.            |
+| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`. |
+| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                        |
+| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                       |
+| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                   |
+| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                            |
+| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                     |
+
+## SCIM
+
+```ts
+import { createScim } from "@avgeek-oss/auth-core/scim";
+
+app.route(
+  "/scim/v2",
+  createScim({
+    config,
+    sql,
+    sessions: auth.sessions,
+    hooks: {
+      onDeactivate: (userId, tx) => revokeApiKeys(tx, userId),
+      onRoleChange: (userId, from, to, tx) => capCredentials(tx, userId, to),
+    },
+  }),
+);
+```
+
+- **Endpoints:** `/Users` and `/Groups` (GET, POST, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`, authenticated with a bearer token from `<APP>_SCIM_TOKENS`. Errors use the SCIM Error schema with fixed messages, such as `userName must be unique.`, and never the database's text; any other error is rethrown to the app's error handler, which should log it, and answers 500.
+- **Filters:** `eq` on `userName` (ignoring case), `externalId`, `id` and `emails.value` or `emails[type eq "work"].value`, joined with `and`; groups on `displayName`, `externalId` and `id`. Other operators answer 400 `invalidFilter`. Lists page with `startIndex` and `count` (at most 200) and honour `attributes` and `excludedAttributes`.
+- **PATCH** accepts `add`, `replace` and `remove` in any case, with paths such as `active`, `name.givenName` and `emails[type eq "work"].value`, or path-less value objects. `"True"` and `"False"` count as booleans. Unknown attributes and the enterprise extension are ignored.
+- **Lifecycle:** `active: false` deactivates and revokes sessions. `DELETE` tombstones the user, removes them from every group and revokes everything; both call `hooks.onDeactivate` in the same transaction. A tombstoned user is gone from SCIM and sign-in refuses them, until the provider provisions the same `externalId` again, as authentik does when someone is assigned back to the application: a `POST` (or a `PUT` to the old id) revives the same user, with the same id and no role until group membership, or in claims mode the next sign-in, gives one. Sessions ended by the deletion stay ended. Nothing else revives a deleted user.
+- **Groups:** display names are unique ignoring case. A PUT without `members` keeps the members, so a rename never empties a group.
+
+### Where roles come from
+
+- **`<APP>_ROLE_SOURCE=claims`** (default). The role claim sets the role at each sign-in, and a claim that maps to nothing takes it away. SCIM manages users and stores groups but does not change roles.
+- **`<APP>_ROLE_SOURCE=scim`** (recommended with authentik). A user's role is the highest role their groups' display names map to through `<APP>_OIDC_ROLE_MAP` (ignoring case), recomputed on every membership change in the same transaction, and `hooks.onRoleChange` runs on every change. With no mapped group the user has no access: their sessions end and sign-in refuses them as `unassigned`. Sign-in never creates users or changes roles in this mode, but still refuses a role claim that maps to nothing. **Switching an existing deployment from `claims` to `scim` signs everyone out** until SCIM assigns them a role, because sessions are only accepted for users whose role SCIM set.
+
+With `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT=true`, the first sign-in of a SCIM-provisioned user (no `sub` yet) links to them by issuer and `externalId = sub`. People are never linked by email.
 
 ## authentik setup
 
@@ -91,6 +126,21 @@ POSTED_OIDC_ROLE_CLAIMS=roles
 ```
 
 Roles come only from the provider, so put the first administrator in `posted-admins`. Anyone the provider makes `admin` can configure the app; first-run setup is gated on `requireRole("admin")` in the app.
+
+For SCIM, add a SCIM provider `posted-scim` and attach it as a **backchannel provider** of the `Posted` application, or its user scope is not applied:
+
+- URL `https://api.posted.example.com/scim/v2`, authentication mode **Static token**, set to one of `POSTED_SCIM_TOKENS`;
+- group filters `posted-viewers`, `posted-members` and `posted-admins`, and **Exclude service accounts** on;
+- the full-sync schedule changed from every four hours to `*/10 * * * *`, because assigning or unassigning a user from the application only syncs then.
+
+```sh
+POSTED_SCIM_TOKENS=$(openssl rand -base64 48)
+POSTED_ROLE_SOURCE=scim
+POSTED_OIDC_ROLE_MAP='{"posted-viewers":"viewer","posted-members":"member","posted-admins":"admin"}'
+POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT=true
+```
+
+authentik sends user changes as `PUT` and never `PATCH`, membership as group `PATCH` `add` and `remove`, and removes users who leave the application's scope with `DELETE`; assigning them back POSTs them again, which revives the same user. Its `externalId` is the hashed user id, the same value as the OIDC `sub` in the default subject mode, which is what makes linking safe.
 
 authentik sends no `iss` parameter in the authorization response and does not advertise it, so the callback validates the ID token's `iss` instead. It ignores `max_age=0`, so step-up always sends `prompt=login` and a positive `max_age`.
 
