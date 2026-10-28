@@ -2,7 +2,7 @@
 
 ## Purpose and boundaries
 
-This repository owns authentication and access control for Avgeek OSS apps: configuration, key derivation, tokens, roles, the auth schema and, in later releases, sessions, the OIDC relying party, the SCIM server, API keys and the MCP authorization server. Apps own their resources, their authorization beyond the three roles, their routes and their branding. The design system owns how the auth screens look.
+This repository owns authentication and access control for Avgeek OSS apps: configuration, key derivation, tokens, roles, the auth schema, sessions, the OIDC relying party, the SCIM server, API keys, the MCP authorization server, rate limits, background jobs, the startup self-check and the browser client. Apps own their resources, their authorization beyond the three roles, their routes and their branding. The design system owns how the auth screens look.
 
 Never import app code or add app-specific behaviour here. App-specific data enters through the `Actor` extension and through options.
 
@@ -12,13 +12,14 @@ Never import app code or add app-specific behaviour here. App-specific data ente
 - Provisioning is SCIM 2.0. A missing role claim means "unknown, keep the current role", never "no role".
 - Roles only: `viewer` < `member` < `admin`, the same in every app. Credentials carry a role ceiling; the effective role is the lower of the ceiling and the user's current role. OAuth scope strings are the role names.
 - Each app is its own MCP authorization server and sends people to the identity provider to authenticate.
-- Break-glass access is the `oss-auth break-glass` CLI only.
+- There is no CLI, no emergency access path and no local sign-in. If the identity provider is down, the apps are unavailable; that is accepted. Offboarding is deactivating the person at the provider: SCIM and back-channel logout revoke everything.
+- No provider-specific code: providers are configured, not special-cased.
 
 ## Invariants
 
 - People are keyed by `(iss, sub)`. Email is an attribute; never match or link on it.
 - Never trust `returnTo`, `state`, `iss` or a logout token without the checks in `oidc/`. A refused sign-in returns an outcome, not an exception.
-- Store only HMAC-SHA256 hashes of tokens and secrets, under a key from `deriveKey`. Never log a token, a secret or a configuration object's secret fields.
+- Store only HMAC-SHA256 hashes of tokens and secrets, under a key from `deriveKey`. Make new values with the current secret's key and look them up with `deriveKeys` and `hashTokens`, so values made under `<APP>_PREVIOUS_SECRETS` still verify. Never log a token, a secret or a configuration object's secret fields.
 - `KEY_LABELS`, `KEY_DERIVATION_SALT`, the API key format and `migrationChecksum` are stored-data formats. Never change or reuse one; add new labels and versions instead. The known-answer tests pin them.
 - Never edit a migration that has shipped. Add a new numbered file. Every SQL function pins `search_path` and reaches tables through `TG_TABLE_SCHEMA`, because the schema name is configurable.
 - Database invariants (roles, tombstones, session revocation) live in constraints and triggers, not only in TypeScript.

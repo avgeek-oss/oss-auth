@@ -77,31 +77,33 @@ When the pages (`<APP>_WEB_ORIGIN`, such as `https://posted.example.com`) and th
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                            | Default                | Meaning                                                                                              |
-| ----------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                          |
-| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                  |
-| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                  |
-| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                                |
-| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                             |
-| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                     |
-| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                      |
-| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.            |
-| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                    |
-| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.         |
-| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                |
-| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                               |
-| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one.  |
-| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                    |
-| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                        |
-| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                           |
-| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                               |
-| `<APP>_TRUSTED_PROXIES`             | unset                  | CIDRs of the proxies in front of the API, whose forwarding header is believed.                       |
-| `<APP>_TRUSTED_PROXY_HEADER`        | `x-forwarded-for`      | The one header those proxies set: `x-forwarded-for` or `forwarded` (RFC 7239). The other is ignored. |
-| `<APP>_RATE_LIMITS`                 | `{}`                   | Policies that replace the defaults, as JSON (see Rate limits).                                       |
-| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                           |
-| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                    |
-| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                             |
+| Variable                            | Default                | Meaning                                                                                                                      |
+| ----------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `<APP>_SECRET`                      | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                                                  |
+| `<APP>_PREVIOUS_SECRETS`            | unset                  | Secrets being rotated out, comma-separated, newest first. What was made under them still verifies (see Rotating the secret). |
+| `<APP>_SELF_CHECK`                  | `true`                 | Run `checkAuthSetup` in the background when `createAuth` starts, and log its summary.                                        |
+| `<APP>_OIDC_ISSUER`                 | required               | The provider's issuer, exactly as its discovery document states it.                                                          |
+| `<APP>_OIDC_CLIENT_ID`              | required               | The client registered for this app.                                                                                          |
+| `<APP>_OIDC_CLIENT_SECRET`          | required               | Its secret. The client authenticates with HTTP Basic.                                                                        |
+| `<APP>_OIDC_SCOPES`                 | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                                                     |
+| `<APP>_OIDC_ROLE_CLAIMS`            | `roles`                | Claims holding roles or groups, comma-separated.                                                                             |
+| `<APP>_OIDC_ROLE_MAP`               | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                                              |
+| `<APP>_ROLE_SOURCE`                 | `claims`               | `claims`: roles from the role claim at sign-in. `scim`: roles from SCIM group membership.                                    |
+| `<APP>_SCIM_TOKENS`                 | unset                  | SCIM bearer tokens, comma-separated so they can rotate. Required by `createScim`.                                            |
+| `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT` | `false`                | Link a SCIM-provisioned user to their first sign-in when `externalId` equals the OIDC `sub`.                                 |
+| `<APP>_WEB_ORIGIN`                  | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                                        |
+| `<APP>_API_ORIGIN`                  | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                                                       |
+| `<APP>_API_KEY_PREFIX`              | the app id             | The first part of every API key, 2 to 16 lowercase letters or digits. API keys are off without one.                          |
+| `<APP>_API_KEY_MAX_TTL_DAYS`        | `365`                  | The longest a key may live, and the default lifetime (1 to 3650).                                                            |
+| `<APP>_API_KEY_ALLOW_NO_EXPIRY`     | `false`                | Allow keys that never expire.                                                                                                |
+| `<APP>_OAUTH_CLIENTS`               | `[]`                   | Pre-registered OAuth clients, as a JSON array (see below).                                                                   |
+| `<APP>_OAUTH_LEGACY_DCR`            | `false`                | Accept RFC 7591 dynamic client registration, which MCP has deprecated.                                                       |
+| `<APP>_TRUSTED_PROXIES`             | unset                  | CIDRs of the proxies in front of the API, whose forwarding header is believed.                                               |
+| `<APP>_TRUSTED_PROXY_HEADER`        | `x-forwarded-for`      | The one header those proxies set: `x-forwarded-for` or `forwarded` (RFC 7239). The other is ignored.                         |
+| `<APP>_RATE_LIMITS`                 | `{}`                   | Policies that replace the defaults, as JSON (see Rate limits).                                                               |
+| `<APP>_SESSION_MAX_AGE`             | `12h`                  | Absolute session lifetime.                                                                                                   |
+| `<APP>_SESSION_IDLE_TIMEOUT`        | `2h`                   | Inactivity limit.                                                                                                            |
+| `<APP>_AUTH_SCHEMA`                 | `auth`                 | The Postgres schema for the auth tables.                                                                                     |
 
 ## API keys
 
@@ -308,6 +310,8 @@ POSTED_OIDC_ROLE_CLAIMS=roles
 
 Roles come only from the provider, so put the first administrator in `posted-admins`. Anyone the provider makes `admin` can configure the app; first-run setup is gated on `requireRole("admin")` in the app.
 
+**Offboarding** is a step in authentik: deactivate the person. SCIM marks them inactive, which in the same transaction ends their sessions and revokes their API keys and MCP grants, and back-channel logout ends their sessions at once. **If authentik is down**, nobody can sign in, by design: there is no emergency account and no local sign-in. Existing sessions and API keys keep working until they expire.
+
 For SCIM, add a SCIM provider `posted-scim` and attach it as a **backchannel provider** of the `Posted` application, or its user scope is not applied:
 
 - URL `https://api.posted.example.com/scim/v2`, authentication mode **Static token**, set to one of `POSTED_SCIM_TOKENS`;
@@ -324,6 +328,108 @@ POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT=true
 authentik sends user changes as `PUT` and never `PATCH`, membership as group `PATCH` `add` and `remove`, and removes users who leave the application's scope with `DELETE`; assigning them back POSTs them again, which revives the same user. Its `externalId` is the hashed user id, the same value as the OIDC `sub` in the default subject mode, which is what makes linking safe.
 
 authentik sends no `iss` parameter in the authorization response and does not advertise it, so the callback validates the ID token's `iss` instead. It ignores `max_age=0`, so step-up always sends `prompt=login` and a positive `max_age`.
+
+## Background jobs
+
+`@avgeek-oss/auth-core/jobs` deletes what has ended. Each sweep deletes in batches of 1,000 rows, each batch its own statement, skipping rows another run holds, so it never blocks traffic:
+
+| Sweep                                   | Deletes                                                                                                                    |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `sweepSessions`                         | sessions past their absolute expiry, and those revoked or idle-expired more than `retentionDays` (default 7) ago           |
+| `sweepLogoutJtis`                       | back-channel logout token ids past the token's own expiry                                                                  |
+| `sweepOAuthRequests`, `sweepOAuthCodes` | consent requests and codes a day past their expiry; a consumed code is kept that long, so a replay still revokes the grant |
+| `sweepOAuthTokens`                      | access and refresh tokens a day past their expiry, and revoked tokens past the retention                                   |
+| `sweepOAuthGrants`                      | grants revoked longer ago than the retention, with their codes and tokens                                                  |
+| `sweepApiKeys`                          | keys revoked, expired or past their rotation grace for longer than the retention                                           |
+| `sweepRateLimitBuckets`                 | rate limit buckets that have emptied                                                                                       |
+
+Sign-in transactions live in a cookie, so there is nothing to sweep for them. `mcp.purgeExpired()` and `rateLimiter.purgeExpired()` run the matching sweeps.
+
+`runAuthJobs({ sql, config })` runs every sweep once and returns the rows each deleted. If its time budget (`timeBudgetSeconds`, default 60) runs out first, it returns `complete: false` and the next run carries on.
+
+**With a job runner**, such as Rootset's jobs runner or a Temporal activity in Towbar, schedule `runAuthJobs` every few minutes:
+
+```ts
+import { runAuthJobs } from "@avgeek-oss/auth-core/jobs";
+
+// A job or activity the runner calls on a schedule.
+export async function authSweeps() {
+  return runAuthJobs({ sql, config });
+}
+```
+
+Overlapping runs are safe, since batches skip rows another run has locked. Pass `exclusive: true` to make a run that overlaps another do nothing and resolve to `null`.
+
+**Without one**, run the worker inside the API process:
+
+```ts
+import { runAuthWorker } from "@avgeek-oss/auth-core/jobs";
+
+const stop = new AbortController();
+void runAuthWorker({ sql, config, signal: stop.signal, onError: report });
+process.on("SIGTERM", () => stop.abort());
+```
+
+- **Schedule.** Every replica runs it, every `intervalSeconds` (default 300, give or take 10%).
+- **One sweeper at a time.** A Postgres advisory lock lets only one replica sweep at a time. An open transaction on one pool connection holds the lock while the batches use other connections, so the pool needs at least two.
+- **Errors** go to `onError` (standard error by default), and the loop carries on.
+- **Stopping.** Aborting the signal lets the current run finish, then resolves.
+
+## Startup self-check
+
+`createAuth` runs `checkAuthSetup` in the background when it starts, unless `<APP>_SELF_CHECK=false`. It logs a summary to standard error, or to the `log` option:
+
+```text
+auth setup for posted: FAILED, 1 error, 1 warning
+  error oidc_client_rejected: The provider refused the client id or secret. Check POSTED_OIDC_CLIENT_ID and POSTED_OIDC_CLIENT_SECRET against the provider's application.
+  warning scopes_role_claim: Roles come from the roles claim, but the requested scopes (openid email profile) may not include it. …
+```
+
+It checks what can be checked without anyone signing in:
+
+| Check               | Codes                                                                                                                                                                                                                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery document  | `oidc_discovery_unreachable`, `oidc_issuer_mismatch` (the issuer must match exactly), `oidc_code_flow_unsupported`, `oidc_pkce_unsupported`, `oidc_pkce_unadvertised` (warning), `oidc_token_endpoint_missing`                                                                        |
+| Client credentials  | `oidc_client_rejected`, or `oidc_client_unverified` (warning) when the provider's answer proves nothing. The check sends one token request for a made-up code, authenticated as the client: a provider that answers `invalid_grant` accepted the credentials.                         |
+| Roles               | `role_map_empty`, `role_map_invalid`, `scim_tokens_missing` for `ROLE_SOURCE=scim`, and `scopes_role_claim` (warning) when no requested scope is known to carry the role claim: with authentik, `entitlements` for `roles` and `profile` for `groups`                                 |
+| Origins             | `origin_insecure` (an error, or a warning for loopback HTTP), and `origins_cross_site` when web and API are different sites. Without the public suffix list, same-site is judged by the last two labels: `origins_site_unverified` (warning) flags hosts under a suffix like `co.uk`. |
+| Database            | `migrations_pending`, `migrations_modified`, `migrations_unknown`, `database_unreachable`                                                                                                                                                                                             |
+| Proxies and secrets | `trusted_proxies_invalid`, `trusted_proxies_everyone` (warning), and `secret_rotation_in_progress` (warning) while `<APP>_PREVIOUS_SECRETS` is set                                                                                                                                    |
+
+`auth.selfCheck` resolves to the report, `{ ok, problems: [{ level, code, message, hint }] }`, and never rejects: by default the app starts whatever the report says. To refuse to start on an error, run the check yourself before serving. It then throws an `AuthSetupError` listing every error:
+
+```ts
+import { checkAuthSetup } from "@avgeek-oss/auth-core";
+
+await checkAuthSetup({ config, sql, failOnError: true, log: console.error });
+```
+
+## Rotating the secret
+
+1. **Rotate.**
+   - Add the current secret to `<APP>_PREVIOUS_SECRETS`, newest first.
+   - Set `<APP>_SECRET` to a new one (`openssl rand -base64 48`).
+   - Deploy.
+2. **Wait out the longest lifetime** of anything made under the old secret:
+   - sessions: `<APP>_SESSION_MAX_AGE`, 12 hours by default;
+   - refresh tokens: 90 days at most;
+   - API keys: up to `<APP>_API_KEY_MAX_TTL_DAYS`.
+
+   Sessions and API keys are re-hashed under the new secret the next time they are used, so one in daily use is moved within a day, and refresh tokens move with their next refresh. An API key that is never used before the end, or never expires, keeps its old hash: re-issue it, or accept that it will stop working.
+
+3. **Finish.** Remove the old secret from `<APP>_PREVIOUS_SECRETS`, and deploy.
+
+During a rotation:
+
+- **New values** (tokens, keys, cookies, seals) always use `<APP>_SECRET`.
+- **Verification** tries its key first, then each previous secret's. This covers:
+  - sessions and API keys, which are also re-hashed;
+  - OAuth codes, access and refresh tokens;
+  - consent requests;
+  - sealed sign-in transactions, so a sign-in that started before the deploy still finishes.
+- **SCIM tokens** are unaffected: both sides are hashed when each request arrives.
+- **Rate limits carry over.** A bucket under the new key starts where the same key's bucket under the old secret stood, so nobody gets a fresh allowance. The one exception is the per-token SCIM limit: it is keyed on the token's hash under the current secret, so it starts afresh once, which allows at most one extra minute of SCIM requests.
+- **The self-check** warns while `<APP>_PREVIOUS_SECRETS` is set.
 
 ## Migrations
 

@@ -8,6 +8,7 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | `@avgeek-oss/auth-core/postgres`                  | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema.       |
 | `@avgeek-oss/auth-core/oidc`                      | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                      |
 | `@avgeek-oss/auth-core/api-keys`                  | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                          |
+| `@avgeek-oss/auth-core/jobs`                      | server  | Sweeps of expired and revoked rows: `runAuthJobs` for a job runner, `runAuthWorker` in process.         |
 | `@avgeek-oss/auth-core/mcp`                       | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.          |
 | `@avgeek-oss/auth-core/rate-limits`               | server  | Rate limits in Postgres (GCRA), client IPs behind trusted proxies, and the default policies.            |
 | `@avgeek-oss/auth-core/sessions`                  | server  | Sessions with absolute and idle expiry, revocation and step-up.                                         |
@@ -17,7 +18,7 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | [`@avgeek-oss/auth-client`](packages/auth-client) | browser | The auth API from the browser: session, sign-in and step-up URLs, API keys, connected apps and consent. |
 | `@avgeek-oss/auth-client/react`                   | browser | `AuthProvider`, `useSession`, `useRequireRole`, `useStepUp` and data hooks, without styling.            |
 
-The operator CLI follows in a later release. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+[ARCHITECTURE.md](ARCHITECTURE.md) has the design and the contract each app implements.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 
@@ -27,6 +28,7 @@ The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https:/
 2. A person signs in to the app's API with OIDC. The app keys them by issuer and subject, never by email, and reads their role from the token's `roles` or `groups` claim.
 3. The provider pushes changes over SCIM: new people, role changes, deactivation. Deactivating a person ends their sessions in the same transaction.
 4. API keys and MCP grants carry a role ceiling. A request acts with the lower of the ceiling and the person's current role, and lowering someone's role revokes their keys above it. Deactivating them revokes all of their keys.
+5. Offboarding happens at the provider: deactivating a person there ends their sessions and revokes their keys and grants, through SCIM and back-channel logout. There is no emergency access path: if the provider is down, nobody can sign in.
 
 ## Add it to an app
 
@@ -49,6 +51,8 @@ POSTED_API_KEY_MAX_TTL_DAYS=365
 POSTED_API_KEY_ALLOW_NO_EXPIRY=false
 POSTED_OAUTH_CLIENTS='[]'
 POSTED_OAUTH_LEGACY_DCR=false
+POSTED_PREVIOUS_SECRETS=
+POSTED_SELF_CHECK=true
 POSTED_TRUSTED_PROXIES=
 POSTED_TRUSTED_PROXY_HEADER=x-forwarded-for
 POSTED_RATE_LIMITS='{}'
@@ -80,7 +84,7 @@ app.use(
 app.post("/api/members", auth.middleware.requireRole("admin"), addMember);
 ```
 
-The [package README](packages/auth-core/README.md) lists the routes, every variable and an authentik setup.
+The [package README](packages/auth-core/README.md) lists the routes, every variable, the background jobs, the startup self-check, secret rotation and an authentik setup.
 
 In the browser, use [`@avgeek-oss/auth-client`](packages/auth-client/README.md) rather than calling the routes by hand:
 
