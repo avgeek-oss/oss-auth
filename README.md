@@ -2,20 +2,22 @@
 
 Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Posted, Rootset, Towbar and Vitalog. Each app signs people in through the organisation's OpenID Connect identity provider, accepts SCIM 2.0 provisioning from it, and gives every person one of three roles: `viewer`, `member` or `admin`. There are no passwords, passkeys or invitations in the apps.
 
-| Package                                       | Runs in | What it does                                                                                      |
-| --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| [`@avgeek-oss/auth-core`](packages/auth-core) | server  | Configuration, key derivation, tokens, the API key format, roles and actors.                      |
-| `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
-| `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
-| `@avgeek-oss/auth-core/api-keys`              | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                    |
-| `@avgeek-oss/auth-core/mcp`                   | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.    |
-| `@avgeek-oss/auth-core/rate-limits`           | server  | Rate limits in Postgres (GCRA), client IPs behind trusted proxies, and the default policies.      |
-| `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
-| `@avgeek-oss/auth-core/scim`                  | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                       |
-| `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
-| `@avgeek-oss/auth-core/testing`               | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                   |
+| Package                                           | Runs in | What it does                                                                                            |
+| ------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| [`@avgeek-oss/auth-core`](packages/auth-core)     | server  | Configuration, key derivation, tokens, the API key format, roles and actors.                            |
+| `@avgeek-oss/auth-core/postgres`                  | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema.       |
+| `@avgeek-oss/auth-core/oidc`                      | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                      |
+| `@avgeek-oss/auth-core/api-keys`                  | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                          |
+| `@avgeek-oss/auth-core/mcp`                       | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.          |
+| `@avgeek-oss/auth-core/rate-limits`               | server  | Rate limits in Postgres (GCRA), client IPs behind trusted proxies, and the default policies.            |
+| `@avgeek-oss/auth-core/sessions`                  | server  | Sessions with absolute and idle expiry, revocation and step-up.                                         |
+| `@avgeek-oss/auth-core/scim`                      | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                             |
+| `@avgeek-oss/auth-core/hono`                      | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.              |
+| `@avgeek-oss/auth-core/testing`                   | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                         |
+| [`@avgeek-oss/auth-client`](packages/auth-client) | browser | The auth API from the browser: session, sign-in and step-up URLs, API keys, connected apps and consent. |
+| `@avgeek-oss/auth-client/react`                   | browser | `AuthProvider`, `useSession`, `useRequireRole`, `useStepUp` and data hooks, without styling.            |
 
-The browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+The operator CLI follows in a later release. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 
@@ -74,6 +76,17 @@ app.post("/api/members", auth.middleware.requireRole("admin"), addMember);
 
 The [package README](packages/auth-core/README.md) lists the routes, every variable and an authentik setup.
 
+In the browser, use [`@avgeek-oss/auth-client`](packages/auth-client/README.md) rather than calling the routes by hand:
+
+```ts
+import { createAuthClient } from "@avgeek-oss/auth-client";
+
+const client = createAuthClient({
+  apiOrigin: "https://api.posted.example.com",
+});
+const session = await client.getSession(); // null when signed out
+```
+
 `loadAuthConfig` throws one error that lists every invalid variable by name. The auth tables live in their own schema, so they never collide with the app's tables.
 
 ## Develop
@@ -82,12 +95,12 @@ The packages require Node 26 or later, the version every avgeek-oss app runs on 
 
 ```sh
 pnpm install
-pnpm verify          # format, lint, typecheck, test, build
+pnpm verify          # format, lint, typecheck, test, build, bundle sizes
 pnpm test:watch
 DATABASE_URL=postgres://... pnpm dev:example   # the reference app on http://localhost:5173
 ```
 
-[`examples/hono-vite`](examples/hono-vite) is a Hono API and a Vite page using `createAuth`, signing in through the mock provider in `@avgeek-oss/auth-core/testing`.
+[`examples/hono-vite`](examples/hono-vite) is a Hono API using `createAuth` and `createMcpAuth`, and a React page on Vite using `@avgeek-oss/auth-client`, signing in through the mock provider in `@avgeek-oss/auth-core/testing`. Its tests include the client's contract tests against that API.
 
 The Postgres suites run when `AUTH_TEST_DATABASE_URL` points at a disposable database; without it they are skipped. CI runs them against Postgres 18, and they also pass on Postgres 16. To run them locally:
 
