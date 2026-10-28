@@ -1,0 +1,5 @@
+Avgeek OSS Auth
+Copyright Avgeek, Inc.
+
+The client has no runtime dependencies. The React hooks work with React,
+which retains its own license.

@@ -129,7 +129,7 @@ jobs:
             exit 1
           fi
           version="${GITHUB_REF_NAME#v}"
-          for name in core; do
+          for name in core client; do
             file="artifacts/avgeek-oss-auth-$name-$version.tgz"
             if [ ! -f "$file" ]; then
               echo "::error::The artifact of run $run has no $file."
@@ -139,7 +139,7 @@ jobs:
       # A dry run also fails when a version is already on npm.
       - name: Check npm tarball publication without uploading
         run: |
-          for name in core; do
+          for name in core client; do
             npm publish ./artifacts/avgeek-oss-auth-$name-*.tgz --access public --dry-run --ignore-scripts --registry=https://registry.npmjs.org
           done
       # Publishes through npm trusted publishing, which adds provenance.
@@ -152,6 +152,7 @@ jobs:
           # A bare "dir/file.tgz" is read by npm as a GitHub owner/repo spec,
           # so the paths must start with ./ to be treated as local tarballs.
           npm publish ./artifacts/avgeek-oss-auth-core-*.tgz --access public
+          npm publish ./artifacts/avgeek-oss-auth-client-*.tgz --access public
 
   # Records the published version on GitHub with its changelog section, as
   # the application repositories do. A separate job keeps write access to

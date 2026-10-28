@@ -1,0 +1,59 @@
+{
+  "name": "@avgeek-oss/auth-client",
+  "version": "0.1.0",
+  "description": "Browser client for the Avgeek OSS auth API: session, sign-in and step-up URLs, API keys, connected apps and MCP consent, with React hooks.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avgeek-oss/oss-auth.git",
+    "directory": "packages/auth-client"
+  },
+  "homepage": "https://github.com/avgeek-oss/oss-auth/tree/main/packages/auth-client#readme",
+  "bugs": {
+    "url": "https://github.com/avgeek-oss/oss-auth/issues"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "exports": {
+    ".": {
+      "@avgeek-oss/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "@avgeek-oss/source": "./src/react/index.ts",
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "size": "node scripts/size.mjs"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  }
+}
