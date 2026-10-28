@@ -1,0 +1,593 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  deriveKey,
+  generateToken,
+  hashToken,
+  type AuditEvent,
+} from "../../src/index.js";
+import {
+  insertAuditEvent,
+  MAX_USER_AGENT_LENGTH,
+  migrate,
+  quoteIdent,
+  type Sql,
+} from "../../src/postgres/index.js";
+import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
+
+const ISS = "https://auth.example.com/application/o/posted/";
+const sessionKey = deriveKey("s".repeat(32), "posted", "session");
+
+describe.skipIf(!databaseUrl).each(adapters)(
+  "0001_core with $name",
+  (adapter) => {
+    let sql: Sql;
+    let close: () => Promise<void>;
+    // A quoted name, so the triggers' TG_TABLE_SCHEMA quoting is exercised.
+    const schema = uniqueSchema("core");
+    const t = (table: string) => `${quoteIdent(schema)}.${table}`;
+
+    beforeAll(async () => {
+      ({ sql, close } = adapter.open());
+      await migrate(sql, { schema });
+    });
+    afterAll(async () => {
+      await dropSchemas(sql, [schema]);
+      await close();
+    });
+
+    let counter = 0;
+    async function createUser(
+      fields: Record<string, unknown> = {},
+    ): Promise<string> {
+      const values = {
+        iss: ISS,
+        sub: `sub-${++counter}-${Date.now()}`,
+        ...fields,
+      };
+      const names = Object.keys(values);
+      const [row] = await sql.query<{ id: string }>(
+        `INSERT INTO ${t("users")} (${names.join(", ")})
+       VALUES (${names.map((_, i) => `$${i + 1}`).join(", ")}) RETURNING id`,
+        Object.values(values),
+      );
+      if (row === undefined) throw new Error("no user");
+      return row.id;
+    }
+
+    async function createSession(
+      userId: string,
+      fields: { sid?: string } = {},
+    ) {
+      const idHash = hashToken(sessionKey, generateToken());
+      await sql.query(
+        `INSERT INTO ${t("sessions")}
+         (id_hash, user_id, authenticated_at, amr, expires_at, idle_expires_at, provider_sid)
+       VALUES ($1, $2, now(), $3::text::text[], now() + interval '12 hours',
+               now() + interval '2 hours', $4)`,
+        [idHash, userId, "{mfa}", fields.sid ?? null],
+      );
+      return idHash;
+    }
+
+    const fails = (
+      text: string,
+      params: unknown[] = [],
+      pattern: RegExp = /violates|check_violation|cannot|never|stays|tombstone|not active/,
+    ) => expect(sql.query(text, params)).rejects.toThrow(pattern);
+
+    describe("users", () => {
+      it("fills defaults", async () => {
+        const id = await createUser({
+          email: "ada@example.com",
+          display_name: "Ada",
+        });
+        const [row] = await sql.query(
+          `SELECT role, active, created_at = updated_at AS "fresh", deactivated_at AS "deactivatedAt",
+                deleted_at AS "deletedAt"
+         FROM ${t("users")} WHERE id = $1`,
+          [id],
+        );
+        expect(row).toEqual({
+          role: "viewer",
+          active: true,
+          fresh: true,
+          deactivatedAt: null,
+          deletedAt: null,
+        });
+        expect(id).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+      });
+
+      it("accepts only the three roles", async () => {
+        for (const role of ["viewer", "member", "admin"])
+          await createUser({ role });
+        await fails(
+          `INSERT INTO ${t("users")} (iss, sub, role) VALUES ($1, 'x-owner', 'owner')`,
+          [ISS],
+        );
+        await fails(
+          `INSERT INTO ${t("users")} (iss, sub, role) VALUES ($1, 'x-null', NULL)`,
+          [ISS],
+          /null value/,
+        );
+      });
+
+      it("keys people by (iss, sub)", async () => {
+        await createUser({ sub: "same-sub" });
+        await fails(
+          `INSERT INTO ${t("users")} (iss, sub) VALUES ($1, 'same-sub')`,
+          [ISS],
+          /users_iss_sub_key/,
+        );
+        // The same subject at another provider is another person.
+        await createUser({
+          iss: "https://accounts.google.com",
+          sub: "same-sub",
+        });
+      });
+
+      it("keeps external ids unique per provider", async () => {
+        await createUser({ external_id: "ext-1" });
+        await fails(
+          `INSERT INTO ${t("users")} (iss, sub, external_id) VALUES ($1, 'other', 'ext-1')`,
+          [ISS],
+          /users_iss_external_id_key/,
+        );
+        await createUser({
+          iss: "https://accounts.google.com",
+          external_id: "ext-1",
+        });
+      });
+
+      it("lets SCIM create a user before the first sign-in, but not an anonymous one", async () => {
+        await createUser({ sub: null, external_id: "scim-only-1" });
+        await createUser({ sub: null, external_id: "scim-only-2" });
+        await fails(
+          `INSERT INTO ${t("users")} (iss, sub) VALUES ($1, NULL)`,
+          [ISS],
+          /users_identified/,
+        );
+      });
+
+      it("rejects empty identifiers and attributes", async () => {
+        const users = t("users");
+        await fails(`INSERT INTO ${users} (iss, sub) VALUES ('', 'x')`);
+        await fails(`INSERT INTO ${users} (iss, sub) VALUES ($1, '')`, [ISS]);
+        await fails(`INSERT INTO ${users} (iss, sub) VALUES ($1, $2)`, [
+          ISS,
+          "x".repeat(256),
+        ]);
+        await fails(
+          `INSERT INTO ${users} (iss, sub, external_id) VALUES ($1, 'e1', '')`,
+          [ISS],
+        );
+        await fails(
+          `INSERT INTO ${users} (iss, sub, email) VALUES ($1, 'e2', '')`,
+          [ISS],
+        );
+        await fails(
+          `INSERT INTO ${users} (iss, sub, display_name) VALUES ($1, 'e3', $2)`,
+          [ISS, "x".repeat(257)],
+        );
+      });
+
+      it("keeps active and deactivated_at consistent", async () => {
+        const id = await createUser();
+        await fails(
+          `UPDATE ${t("users")} SET active = false WHERE id = $1`,
+          [id],
+          /users_active_matches_deactivated_at/,
+        );
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now() WHERE id = $1`,
+          [id],
+        );
+        await fails(
+          `UPDATE ${t("users")} SET active = true WHERE id = $1`,
+          [id],
+          /users_active_matches_deactivated_at/,
+        );
+        await sql.query(
+          `UPDATE ${t("users")} SET active = true, deactivated_at = NULL WHERE id = $1`,
+          [id],
+        );
+      });
+
+      it("makes deletion a permanent tombstone", async () => {
+        const id = await createUser({ email: "gone@example.com" });
+        await fails(
+          `UPDATE ${t("users")} SET deleted_at = now() WHERE id = $1`,
+          [id],
+          /users_deleted_is_inactive/,
+        );
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now(), deleted_at = now(), email = NULL
+         WHERE id = $1`,
+          [id],
+        );
+        await fails(
+          `UPDATE ${t("users")} SET deleted_at = NULL, active = true, deactivated_at = NULL WHERE id = $1`,
+          [id],
+        );
+        await fails(
+          `UPDATE ${t("users")} SET deleted_at = now() + interval '1 day' WHERE id = $1`,
+          [id],
+        );
+        // Other fields on a tombstone may still change, such as scrubbing data.
+        await sql.query(
+          `UPDATE ${t("users")} SET display_name = NULL WHERE id = $1`,
+          [id],
+        );
+      });
+
+      it("moves updated_at on every update and never changes the id", async () => {
+        const id = await createUser({
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          updated_at: new Date("2026-01-01T00:00:00Z"),
+        });
+        await sql.query(
+          `UPDATE ${t("users")} SET display_name = 'Grace' WHERE id = $1`,
+          [id],
+        );
+        const [row] = await sql.query<{ moved: boolean }>(
+          `SELECT updated_at > created_at AS "moved" FROM ${t("users")} WHERE id = $1`,
+          [id],
+        );
+        expect(row?.moved).toBe(true);
+        await fails(
+          `UPDATE ${t("users")} SET id = gen_random_uuid() WHERE id = $1`,
+          [id],
+        );
+      });
+    });
+
+    describe("sessions", () => {
+      it("stores a hashed id with the provider's details", async () => {
+        const userId = await createUser();
+        const idHash = await createSession(userId, { sid: "provider-sid-1" });
+        const [row] = await sql.query(
+          `SELECT user_id AS "userId", amr, provider_sid AS "sid", revoked_at AS "revokedAt"
+         FROM ${t("sessions")} WHERE id_hash = $1`,
+          [idHash],
+        );
+        expect(row).toEqual({
+          userId,
+          amr: ["mfa"],
+          sid: "provider-sid-1",
+          revokedAt: null,
+        });
+      });
+
+      it("accepts only 64-character lowercase hex ids", async () => {
+        const userId = await createUser();
+        for (const id of ["abc", "A".repeat(64), generateToken()])
+          await fails(
+            `INSERT INTO ${t("sessions")} (id_hash, user_id, authenticated_at, expires_at, idle_expires_at)
+           VALUES ($1, $2, now(), now() + interval '1 hour', now() + interval '1 hour')`,
+            [id, userId],
+          );
+      });
+
+      it("refuses a session for an inactive, deleted or missing user", async () => {
+        const inactive = await createUser({
+          active: false,
+          deactivated_at: new Date(),
+        });
+        await expect(createSession(inactive)).rejects.toThrow(/not active/);
+        const deleted = await createUser({
+          active: false,
+          deactivated_at: new Date(),
+          deleted_at: new Date(),
+        });
+        await expect(createSession(deleted)).rejects.toThrow(/not active/);
+        await expect(
+          createSession("00000000-0000-4000-8000-000000000000"),
+        ).rejects.toThrow(/not active/);
+      });
+
+      it("enforces the time ordering", async () => {
+        const userId = await createUser();
+        const insert = (authenticated: string, expires: string, idle: string) =>
+          fails(
+            `INSERT INTO ${t("sessions")} (id_hash, user_id, authenticated_at, expires_at, idle_expires_at)
+           VALUES ($1, $2, now() + $3::interval, now() + $4::interval, now() + $5::interval)`,
+            [
+              hashToken(sessionKey, generateToken()),
+              userId,
+              authenticated,
+              expires,
+              idle,
+            ],
+          );
+        await insert("0", "0", "0"); // expires at creation
+        await insert("0", "1 hour", "2 hours"); // idle beyond expiry
+        await insert("0", "1 hour", "0"); // idle at creation
+      });
+
+      it("lets activity and step-up move forward, but fixes identity, expiry and revocation", async () => {
+        const userId = await createUser();
+        const idHash = await createSession(userId);
+        await sql.query(
+          `UPDATE ${t("sessions")} SET idle_expires_at = expires_at, authenticated_at = now(), amr = '{pwd,mfa}'
+         WHERE id_hash = $1`,
+          [idHash],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET authenticated_at = authenticated_at - interval '1 second' WHERE id_hash = $1`,
+          [idHash],
+          /never moves back/,
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET expires_at = expires_at + interval '1 day' WHERE id_hash = $1`,
+          [idHash],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET user_id = $2 WHERE id_hash = $1`,
+          [idHash, await createUser()],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET id_hash = $2 WHERE id_hash = $1`,
+          [idHash, "0".repeat(64)],
+        );
+        await sql.query(
+          `UPDATE ${t("sessions")} SET revoked_at = now() WHERE id_hash = $1`,
+          [idHash],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET revoked_at = NULL WHERE id_hash = $1`,
+          [idHash],
+        );
+      });
+
+      it("revokes every live session when the user is deactivated", async () => {
+        const userId = await createUser();
+        const other = await createUser();
+        const live = [await createSession(userId), await createSession(userId)];
+        const earlier = await createSession(userId);
+        await sql.query(
+          `UPDATE ${t("sessions")} SET revoked_at = created_at WHERE id_hash = $1`,
+          [earlier],
+        );
+        const [before] = await sql.query<{ at: Date }>(
+          `SELECT revoked_at AS "at" FROM ${t("sessions")} WHERE id_hash = $1`,
+          [earlier],
+        );
+        const untouched = await createSession(other);
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now() WHERE id = $1`,
+          [userId],
+        );
+        const rows = await sql.query<{
+          idHash: string;
+          revoked: boolean;
+          at: Date | null;
+        }>(
+          `SELECT id_hash AS "idHash", revoked_at IS NOT NULL AS "revoked", revoked_at AS "at"
+         FROM ${t("sessions")} WHERE id_hash = ANY($1::text[])`,
+          [`{${[...live, earlier, untouched].join(",")}}`],
+        );
+        const byId = new Map(rows.map((r) => [r.idHash, r]));
+        for (const id of live) expect(byId.get(id)?.revoked).toBe(true);
+        expect(byId.get(earlier)?.at).toEqual(before?.at);
+        expect(byId.get(untouched)?.revoked).toBe(false);
+      });
+
+      it("deletes a user's sessions with the user", async () => {
+        const userId = await createUser();
+        const idHash = await createSession(userId);
+        await sql.query(`DELETE FROM ${t("users")} WHERE id = $1`, [userId]);
+        expect(
+          await sql.query(`SELECT 1 FROM ${t("sessions")} WHERE id_hash = $1`, [
+            idHash,
+          ]),
+        ).toEqual([]);
+      });
+    });
+
+    describe("audit events", () => {
+      const read = async (id: string) =>
+        (
+          await sql.query(
+            `SELECT type, actor_type AS "actorType", actor_user_id AS "actorUserId", actor_issuer AS "actorIssuer",
+                  credential_kind AS "credentialKind", credential_id AS "credentialId",
+                  subject_user_id AS "subjectUserId", host(ip) AS "ip", user_agent AS "userAgent", data,
+                  occurred_at AS "occurredAt"
+           FROM ${t("audit_events")} WHERE id = $1::bigint`,
+            [id],
+          )
+        )[0];
+
+      it("records a user's action with the credential used", async () => {
+        const userId = await createUser();
+        const event: AuditEvent = {
+          type: "session.created",
+          actor: {
+            type: "user",
+            userId,
+            credential: { kind: "session", id: "f".repeat(64) },
+          },
+          subjectUserId: userId,
+          data: { amr: ["mfa"] },
+          context: { ip: "2001:db8::1", userAgent: "Firefox" },
+        };
+        const id = await insertAuditEvent(sql, event, { schema });
+        expect(id).toMatch(/^\d+$/);
+        expect(await read(id)).toMatchObject({
+          type: "session.created",
+          actorType: "user",
+          actorUserId: userId,
+          actorIssuer: null,
+          credentialKind: "session",
+          credentialId: "f".repeat(64),
+          subjectUserId: userId,
+          ip: "2001:db8::1",
+          userAgent: "Firefox",
+          data: { amr: ["mfa"] },
+        });
+      });
+
+      it("records provider, operator and system actors", async () => {
+        const subject = await createUser();
+        const at = new Date("2026-10-28T09:30:00.000Z");
+        const id = await insertAuditEvent(
+          sql,
+          {
+            type: "user.role_changed",
+            actor: { type: "idp", issuer: ISS },
+            subjectUserId: subject,
+            data: { source: "scim", from: "member", to: "admin" },
+            occurredAt: at,
+          },
+          { schema },
+        );
+        expect(await read(id)).toMatchObject({
+          actorType: "idp",
+          actorIssuer: ISS,
+          actorUserId: null,
+          credentialKind: null,
+          ip: null,
+          occurredAt: at,
+          data: { source: "scim", from: "member", to: "admin" },
+        });
+        const operator = await insertAuditEvent(
+          sql,
+          {
+            type: "session.revoked",
+            actor: { type: "operator" },
+            subjectUserId: subject,
+            data: { reason: "operator" },
+          },
+          { schema },
+        );
+        expect((await read(operator))?.actorType).toBe("operator");
+        const system = await insertAuditEvent(
+          sql,
+          {
+            type: "sign_in.denied",
+            actor: { type: "system" },
+            subjectUserId: null,
+            data: { reason: "no_role" },
+          },
+          { schema },
+        );
+        expect(await read(system)).toMatchObject({
+          actorType: "system",
+          subjectUserId: null,
+        });
+        expect(BigInt(system)).toBeGreaterThan(BigInt(operator));
+      });
+
+      it("cuts long user agents by character", async () => {
+        const userAgent = "🛫".repeat(MAX_USER_AGENT_LENGTH + 10);
+        const id = await insertAuditEvent(
+          sql,
+          {
+            type: "sign_in.denied",
+            actor: { type: "system" },
+            subjectUserId: null,
+            data: { reason: "unknown_user" },
+            context: { ip: null, userAgent },
+          },
+          { schema },
+        );
+        expect((await read(id))?.userAgent).toBe(
+          "🛫".repeat(MAX_USER_AGENT_LENGTH),
+        );
+      });
+
+      it("rejects unknown types and malformed addresses", async () => {
+        await expect(
+          insertAuditEvent(
+            sql,
+            {
+              type: "user.exploded",
+              actor: { type: "system" },
+              subjectUserId: null,
+              data: {},
+            } as unknown as AuditEvent,
+            { schema },
+          ),
+        ).rejects.toThrow(TypeError);
+        await expect(
+          insertAuditEvent(
+            sql,
+            {
+              type: "sign_in.denied",
+              actor: { type: "system" },
+              subjectUserId: null,
+              data: { reason: "no_role" },
+              context: { ip: "not an address", userAgent: null },
+            },
+            { schema },
+          ),
+        ).rejects.toThrow(/inet/);
+      });
+
+      it("enforces actor consistency in the table itself", async () => {
+        const userId = await createUser();
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('user.created', 'user')`,
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type, actor_user_id) VALUES ('user.created', 'system', $1)`,
+          [userId],
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('user.created', 'idp')`,
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type, credential_kind, credential_id) VALUES ('user.created', 'system', 'session', 'x')`,
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type, actor_user_id, credential_kind) VALUES ('user.created', 'user', $1, 'api_key')`,
+          [userId],
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type) VALUES ('Created', 'system')`,
+        );
+        await fails(
+          `INSERT INTO ${t("audit_events")} (type, actor_type, data) VALUES ('user.created', 'system', '[]')`,
+        );
+      });
+
+      it("never updates a row but allows deleting old ones", async () => {
+        const id = await insertAuditEvent(
+          sql,
+          {
+            type: "sign_in.denied",
+            actor: { type: "system" },
+            subjectUserId: null,
+            data: { reason: "no_role" },
+          },
+          { schema },
+        );
+        await fails(
+          `UPDATE ${t("audit_events")} SET data = '{}' WHERE id = $1::bigint`,
+          [id],
+          /append-only/,
+        );
+        await sql.query(
+          `DELETE FROM ${t("audit_events")} WHERE id = $1::bigint`,
+          [id],
+        );
+        expect(await read(id)).toBeUndefined();
+      });
+
+      it("refuses an invalid schema name", async () => {
+        await expect(
+          insertAuditEvent(
+            sql,
+            {
+              type: "sign_in.denied",
+              actor: { type: "system" },
+              subjectUserId: null,
+              data: { reason: "no_role" },
+            },
+            { schema: "pg_catalog" },
+          ),
+        ).rejects.toThrow(TypeError);
+      });
+    });
+  },
+);

@@ -1,0 +1,67 @@
+{
+  "name": "@avgeek-oss/auth-core",
+  "version": "0.1.0",
+  "description": "Server-side auth foundation for Avgeek OSS apps: configuration, key derivation, tokens, API key format, roles, audit events and the Postgres schema.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avgeek-oss/oss-auth.git",
+    "directory": "packages/auth-core"
+  },
+  "homepage": "https://github.com/avgeek-oss/oss-auth/tree/main/packages/auth-core#readme",
+  "bugs": {
+    "url": "https://github.com/avgeek-oss/oss-auth/issues"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "migrations",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "source": "./src/postgres/index.ts",
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "pg": "^8.16.0",
+    "postgres": "^3.4.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "postgres": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "pg": "^8.23.1",
+    "postgres": "^3.4.9"
+  }
+}

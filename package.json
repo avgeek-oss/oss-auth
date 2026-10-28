@@ -1,0 +1,38 @@
+{
+  "name": "oss-auth",
+  "private": true,
+  "description": "Shared sign-in, provisioning and access control for Avgeek OSS apps.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avgeek-oss/oss-auth.git"
+  },
+  "homepage": "https://github.com/avgeek-oss/oss-auth#readme",
+  "bugs": {
+    "url": "https://github.com/avgeek-oss/oss-auth/issues"
+  },
+  "engines": {
+    "node": ">=26 <27"
+  },
+  "packageManager": "pnpm@11.5.3",
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/*\" build",
+    "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "oxlint --type-aware --deny-warnings",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "oxlint": "1.90.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "prettier": "3.9.9",
+    "typescript": "^7.0.2",
+    "vitest": "5.0.4"
+  }
+}

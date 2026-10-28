@@ -1,0 +1,202 @@
+name: Cut release
+# On-demand replacement for pushing a release tag by hand. It tags the
+# current main commit as v<package version> and starts the "Validate and
+# publish" workflow on that tag, which publishes the tarballs that main's
+# verified run built for that commit. A tag pushed with the workflow token
+# does not trigger other workflows on its own, so the publish run is
+# started explicitly; manual dispatch is one of the events that token may
+# start.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release. Must match every packages/*/package.json. Defaults to them."
+        required: false
+        type: string
+      dry_run:
+        description: "Run every check and print the plan without tagging"
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: release-cutter
+  cancel-in-progress: false
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    # About 25 seconds; the publish dispatch can retry for up to 30 more.
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow from main. Releases are cut from the head of main only."
+          exit 1
+      - name: Note the mode
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "**Dry run.** Checks only; nothing is tagged or published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Release.** If every check passes, this run tags main and starts publishing." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # No step keeps a git credential: the tag push below authenticates
+      # through gh with GH_TOKEN for that one command.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: Resolve the version
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          version=""
+          names=""
+          for pkg in packages/*/package.json; do
+            v=$(node -p "require('./$pkg').version")
+            n=$(node -p "require('./$pkg').name")
+            if [ -z "$version" ]; then version="$v"; fi
+            if [ "$v" != "$version" ]; then
+              echo "::error::$pkg is $v but other packages are $version. All packages release together."
+              exit 1
+            fi
+            names="$names $n"
+          done
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "$version" ]; then
+            echo "::error::Requested $REQUESTED but the packages are $version. Merge the version bump first."
+            exit 1
+          fi
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Package version $version is not a stable x.y.z release."
+            exit 1
+          fi
+          {
+            echo "VERSION=$version"
+            echo "TAG=v$version"
+            echo "PACKAGES=${names# }"
+          } >> "$GITHUB_ENV"
+      - name: Check the changelog has an entry
+        run: |
+          escaped=$(printf '%s' "$VERSION" | sed 's/[.]/\\./g')
+          if ! grep -Eq "^## ${escaped} \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${VERSION} (YYYY-MM-DD)' section. Add it, dated the release day, before releasing."
+            exit 1
+          fi
+      - name: Check the tag and versions are new
+        run: |
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
+            echo "::error::Tag $TAG already exists."
+            exit 1
+          fi
+          # Only a 404 proves the version is absent. Any other failure, such
+          # as a registry outage, must not let a tag through unchecked.
+          for name in $PACKAGES; do
+            output=$(npm view "$name@$VERSION" version 2>&1) && code=0 || code=$?
+            if [ "$code" -eq 0 ] && [ -n "$output" ]; then
+              echo "::error::$name@$VERSION is already on npm."
+              exit 1
+            fi
+            if [ "$code" -ne 0 ] && ! printf '%s' "$output" | grep -q "E404"; then
+              echo "::error::Could not check npm for $name@$VERSION (exit $code). Nothing was tagged."
+              printf '%s\n' "$output"
+              exit 1
+            fi
+          done
+      # A lower version would become the Latest GitHub release and move
+      # npm's latest dist-tag back, so releases only move forward.
+      - name: Check the version is newer than the latest release
+        run: |
+          set -euo pipefail
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1)
+          if [ -n "$latest" ] && [ "$(printf '%s\n' "$latest" "$TAG" | sort -V | tail -1)" != "$TAG" ]; then
+            echo "::error::$TAG is lower than the latest release $latest. Releases only move forward; bump the packages past $latest."
+            exit 1
+          fi
+          echo "Latest release: ${latest:-none}. $TAG sorts after it."
+      - name: Check main verification passed for this commit
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=10" \
+            --jq '([.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last) // empty | [.status, (.conclusion // "-"), .html_url] | @tsv')
+          if [ -z "$run" ]; then
+            echo "::error::No CI run exists for $GITHUB_SHA yet. It appears once the push to main is processed; try again in a minute."
+            exit 1
+          fi
+          status=$(printf '%s' "$run" | cut -f1)
+          conclusion=$(printf '%s' "$run" | cut -f2)
+          url=$(printf '%s' "$run" | cut -f3)
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI for $GITHUB_SHA is $status ($conclusion), not success: $url. Run this again once it passes."
+            exit 1
+          fi
+      # The publish run does not rebuild: it downloads the tarballs from the
+      # same main run it finds here, and artifacts expire after 30 days.
+      - name: Check the verified tarballs are still available
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=5" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main")] | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$run" ]; then
+            echo "::error::No successful CI push run exists on main for $GITHUB_SHA, so there are no verified tarballs to publish. Nothing was tagged."
+            exit 1
+          fi
+          expires=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=packages" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .expires_at // empty')
+          if [ -z "$expires" ]; then
+            echo "::error::Run $run verified $GITHUB_SHA but its 'packages' artifact has expired or was never uploaded. Re-run that run (gh run rerun $run) so it uploads them again, or merge a newer commit to main, then run this again. Nothing was tagged."
+            exit 1
+          fi
+          echo "Run $run has the 'packages' artifact until $expires."
+      - name: Plan
+        run: |
+          {
+            echo "## Release $TAG"
+            echo
+            echo "- Packages: $(for n in $PACKAGES; do printf '`%s@%s` ' "$n" "$VERSION"; done)"
+            echo "- Commit: \`$GITHUB_SHA\` on \`main\`"
+            echo "- Tag: \`$TAG\`, annotated, message \"Release $TAG\""
+            echo "- Then: start the **CI** workflow on \`$TAG\`"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo
+              echo "Dry run: nothing was tagged or started."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Create and push the tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          live=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)
+          if [ "$live" != "$GITHUB_SHA" ]; then
+            echo "::error::main moved to ${live:0:7} while this run checked ${GITHUB_SHA:0:7}. Nothing was tagged; run again on the new head."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
+          # The checkout persists no credential, so gh supplies GH_TOKEN to
+          # git for this push only. The token never reaches .git/config.
+          git -c credential.helper= -c credential.helper='!gh auth git-credential' push origin "refs/tags/$TAG"
+      - name: Start the publish workflow on the tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          # The dispatch can fail briefly while GitHub registers the new tag.
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run ci.yml --ref "$TAG"; then break; fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::Could not start the publish workflow. The tag $TAG exists; start the CI workflow on it by hand."
+              exit 1
+            fi
+            sleep 5
+          done
+          # Give the new run a moment to appear before linking it.
+          sleep 10
+          url=$(gh run list --workflow ci.yml --event workflow_dispatch --branch "$TAG" --limit 1 --json url --jq '.[0].url // ""')
+          actions="https://github.com/$GITHUB_REPOSITORY/actions/workflows/ci.yml?query=branch%3A$TAG"
+          {
+            echo
+            echo "Tagged \`$TAG\`. Publish run: ${url:-$actions}"
+          } >> "$GITHUB_STEP_SUMMARY"
