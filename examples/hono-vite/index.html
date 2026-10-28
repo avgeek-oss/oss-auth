@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auth reference app</title>
+    <style>
+      body {
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        max-width: 32rem;
+        margin: 3rem auto;
+        padding: 0 1rem;
+      }
+      button {
+        margin-right: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Auth reference app</h1>
+    <p id="status">Loading…</p>
+    <p>
+      <button id="sign-in" hidden>Sign in</button>
+      <button id="sensitive" hidden>Sensitive action</button>
+      <button id="sign-out" hidden>Sign out</button>
+    </p>
+    <p id="result" role="status"></p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -18,9 +18,10 @@
   "packageManager": "pnpm@11.5.3",
   "scripts": {
     "build": "pnpm -r --filter \"./packages/*\" build",
-    "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
+    "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./examples/*\" typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
+    "dev:example": "pnpm build && pnpm --filter @avgeek-oss/example-hono-vite dev",
     "lint": "oxlint --type-aware --deny-warnings",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
