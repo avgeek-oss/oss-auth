@@ -37,6 +37,7 @@ export {
   AuthConfigError,
   AuthError,
   AuthRequestError,
+  AuthSetupError,
   InvalidApiKeyError,
   isAuthError,
   MigrationError,
@@ -52,6 +53,7 @@ export {
 export {
   createKeyring,
   deriveKey,
+  deriveKeys,
   DERIVED_KEY_BYTES,
   KEY_DERIVATION_SALT,
   KEY_LABELS,
@@ -74,8 +76,16 @@ export {
   constantTimeEqual,
   generateToken,
   hashToken,
+  hashTokens,
   isWellFormedToken,
   TOKEN_BYTES,
   TOKEN_LENGTH,
   verifyTokenHash,
 } from "./tokens.js";
+export {
+  checkAuthSetup,
+  formatAuthSetupReport,
+  type AuthSetupProblem,
+  type AuthSetupReport,
+  type CheckAuthSetupOptions,
+} from "./setup.js";

@@ -23,6 +23,7 @@ const BUNDLED = [
   "0004_api_keys.sql",
   "0005_oauth.sql",
   "0006_rate_limits.sql",
+  "0007_secret_rotation.sql",
 ];
 const extra = (
   name: string,

@@ -8,6 +8,7 @@ import { getRequestListener } from "@hono/node-server";
 import pg from "pg";
 import { createServer as createViteServer } from "vite";
 import { loadAuthConfig } from "@avgeek-oss/auth-core";
+import { runAuthWorker } from "@avgeek-oss/auth-core/jobs";
 import { fromPg, migrate } from "@avgeek-oss/auth-core/postgres";
 import { startMockProvider } from "@avgeek-oss/auth-core/testing";
 import { createExampleApp } from "./app.ts";
@@ -75,6 +76,9 @@ const config = loadAuthConfig("example", {
 const sql = fromPg(new pg.Pool({ connectionString: databaseUrl }));
 await migrate(sql, { schema: config.schema });
 const { app } = createExampleApp({ config, sql });
+// Sweeps expired sessions, tokens and the rest every five minutes. An app
+// with a job runner calls runAuthJobs from it instead.
+void runAuthWorker({ sql, config, signal: new AbortController().signal });
 createHttpServer(getRequestListener(app.fetch)).listen(API_PORT, "127.0.0.1");
 
 const vite = await createViteServer({

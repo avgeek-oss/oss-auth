@@ -1,10 +1,15 @@
 import { createActor, type Actor, type ActorUser } from "../actor.js";
 import type { AuthConfig } from "../config.js";
 import { quoteIdent } from "../identifiers.js";
-import { deriveKey } from "../keys.js";
+import { deriveKeys } from "../keys.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
 import type { Role } from "../roles.js";
-import { generateToken, hashToken, isWellFormedToken } from "../tokens.js";
+import {
+  generateToken,
+  hashToken,
+  hashTokens,
+  isWellFormedToken,
+} from "../tokens.js";
 
 /** A stored session. The token itself is never stored or returned again. */
 export interface SessionRecord {
@@ -30,7 +35,7 @@ export interface SessionLookup<Ext extends object> {
 /** Options for {@link createSessions}. */
 export interface SessionsOptions<Ext extends object> {
   readonly sql: Sql;
-  /** Uses `app`, `secret`, `session` and `schema`. */
+  /** Uses `app`, `secret`, `previousSecrets`, `session` and `schema`. */
   readonly config: AuthConfig;
   /** Adds app-specific fields to each actor. */
   readonly extendActor?: (user: ActorUser) => Ext | Promise<Ext>;
@@ -64,10 +69,18 @@ export interface Sessions<Ext extends object> {
    * expiry. Returns `null` for anything else, including malformed tokens.
    */
   lookup(token: string | undefined): Promise<SessionLookup<Ext> | null>;
-  /** The hash stored for `token`, or `null` when it is malformed. */
+  /**
+   * The hash a new session for `token` is stored under (the current
+   * secret's), or `null` when it is malformed.
+   */
   hash(token: string | undefined): string | null;
   /** Revokes one session. Returns whether a live session was revoked. */
   revoke(idHash: string): Promise<boolean>;
+  /**
+   * Revokes the session `token` names, whichever secret it was stored
+   * under. Returns whether a live session was revoked.
+   */
+  revokeToken(token: string | undefined): Promise<boolean>;
   /**
    * Revokes every live session of a user and returns how many. Pass a
    * transaction as `db` to make it part of a larger change.
@@ -108,7 +121,10 @@ export function createSessions<Ext extends object = Record<never, never>>(
   options: SessionsOptions<Ext>,
 ): Sessions<Ext> {
   const { sql, config } = options;
-  const key = deriveKey(config.secret, config.app, "session");
+  // The current secret's key first; the others only find sessions made
+  // before a rotation, which lookup re-hashes under the first.
+  const keyring = deriveKeys(config, "session");
+  const key = keyring[0] ?? raise();
   const schema = quoteIdent(config.schema);
   const sessions = `${schema}.sessions`;
   const users = `${schema}.users`;
@@ -120,6 +136,22 @@ export function createSessions<Ext extends object = Record<never, never>>(
 
   const hash = (token: string | undefined) =>
     isWellFormedToken(token) ? hashToken(key, token) : null;
+  const candidates = (token: string | undefined) =>
+    isWellFormedToken(token) ? hashTokens(keyring, token) : [];
+
+  /** Moves a session found under a previous secret to the current key. */
+  async function rehash(oldHash: string, newHash: string): Promise<void> {
+    await sql.transaction(async (tx) => {
+      await tx.query(`SELECT set_config('auth_core.rehash', $1, true)`, [
+        oldHash,
+      ]);
+      // Another request may have moved it first; then nothing matches.
+      await tx.query(`UPDATE ${sessions} SET id_hash = $2 WHERE id_hash = $1`, [
+        oldHash,
+        newHash,
+      ]);
+    });
+  }
 
   async function revokeWhere(
     db: SqlQueryable,
@@ -166,8 +198,9 @@ export function createSessions<Ext extends object = Record<never, never>>(
     },
 
     async lookup(token) {
-      const idHash = hash(token);
-      if (idHash === null) return null;
+      const hashes = candidates(token);
+      const idHash = hashes[0];
+      if (idHash === undefined) return null;
       const [row] = await sql.query<
         SessionRecord & {
           role: Role;
@@ -177,13 +210,14 @@ export function createSessions<Ext extends object = Record<never, never>>(
       >(
         `SELECT ${SESSION_COLUMNS}, u.role, u.email, u.display_name AS "displayName"
          FROM ${sessions} s JOIN ${users} u ON u.id = s.user_id
-         WHERE s.id_hash = $2 AND s.revoked_at IS NULL
+         WHERE s.id_hash = ANY($2::text[]) AND s.revoked_at IS NULL
            AND s.expires_at > ${T} AND s.idle_expires_at > ${T}
            AND u.active AND u.deleted_at IS NULL AND u.role IS NOT NULL
            AND ($3::boolean IS NOT TRUE OR u.role_source = 'scim')`,
-        [now(), idHash, config.roleSource === "scim"],
+        [now(), hashes, config.roleSource === "scim"],
       );
       if (row === undefined) return null;
+      if (row.idHash !== idHash) await rehash(row.idHash, idHash);
       const [slid] = await sql.query<{ idleExpiresAt: Date }>(
         `UPDATE ${sessions}
          SET idle_expires_at = LEAST(${T} + make_interval(secs => $3), expires_at)
@@ -195,6 +229,7 @@ export function createSessions<Ext extends object = Record<never, never>>(
       const { role, email, displayName, ...rest } = row;
       const session: SessionRecord = {
         ...rest,
+        idHash,
         idleExpiresAt: slid?.idleExpiresAt ?? row.idleExpiresAt,
       };
       const user: ActorUser = { id: row.userId, role, email, displayName };
@@ -219,6 +254,13 @@ export function createSessions<Ext extends object = Record<never, never>>(
 
     async revoke(idHash) {
       return (await revokeWhere(sql, "s.id_hash = $2", [idHash])) > 0;
+    },
+    async revokeToken(token) {
+      const hashes = candidates(token);
+      if (hashes.length === 0) return false;
+      return (
+        (await revokeWhere(sql, "s.id_hash = ANY($2::text[])", [hashes])) > 0
+      );
     },
 
     async revokeAll(userId, db) {
@@ -258,4 +300,8 @@ export function createSessions<Ext extends object = Record<never, never>>(
       );
     },
   };
+}
+
+function raise(): never {
+  throw new Error("deriveKeys returned no key.");
 }

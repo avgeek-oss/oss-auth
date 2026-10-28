@@ -30,6 +30,7 @@ import {
   type RateLimitPolicy,
 } from "../rate-limits/index.js";
 import { isRole, roleAtLeast, type Role } from "../roles.js";
+import { checkAuthSetup, type AuthSetupReport } from "../setup.js";
 import {
   createSessions,
   type SessionRecord,
@@ -104,6 +105,12 @@ export interface CreateAuthOptions<Ext extends object> {
   readonly getClientIp?: (c: Context) => string | null | undefined;
   /** A rate limiter to share with other components. Created when left out. */
   readonly rateLimiter?: RateLimiter;
+  /**
+   * Where the startup self-check writes its summary, one line at a time.
+   * Default: standard error. The check runs unless `<APP>_SELF_CHECK` is
+   * false; see `checkAuthSetup`.
+   */
+  readonly log?: (line: string) => void;
 }
 
 /** What {@link createAuth} returns. */
@@ -194,6 +201,13 @@ export interface Auth<Ext extends object> {
   readonly clientIp: (c: Context) => string | null;
   /** The per-IP limit key: the address, or the /64 for IPv6. */
   readonly ipKey: (c: Context) => string;
+  /**
+   * The startup self-check's report, once it finishes, or `null` when
+   * `<APP>_SELF_CHECK` is false. Never rejects. To refuse to start on an
+   * error, await `checkAuthSetup({ config, sql, failOnError: true })`
+   * before serving instead.
+   */
+  readonly selfCheck: Promise<AuthSetupReport> | null;
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -603,7 +617,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
         return c.redirect(`${web}${transaction.returnTo}`, 303);
       }
 
-      const previous = sessions.hash(getCookie(c, sessionCookie));
+      const previous = getCookie(c, sessionCookie);
       const outcome: SignInOutcome & { token?: string } = await sql.transaction(
         async (tx) => {
           const result = await signInUser(tx, config, claims);
@@ -629,7 +643,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
           { reason: outcome.reason },
         );
       // A new token every sign-in; the browser's previous session ends.
-      if (previous !== null) await sessions.revoke(previous);
+      if (previous !== undefined) await sessions.revokeToken(previous);
       setSessionCookie(c, outcome.token ?? "");
       return c.redirect(`${web}${transaction.returnTo}`, 303);
     } catch (error) {
@@ -888,7 +902,28 @@ export function createAuth<Ext extends object = Record<never, never>>(
     return c.body(null, 204);
   });
 
+  const selfCheck = config.selfCheck
+    ? checkAuthSetup({
+        config,
+        sql,
+        basePath,
+        ...(options.oidc?.fetch ? { fetch: options.oidc.fetch } : {}),
+        log: options.log ?? ((line) => process.stderr.write(`${line}\n`)),
+      }).catch((error: unknown): AuthSetupReport => ({
+        ok: false,
+        problems: [
+          {
+            level: "error",
+            code: "self_check_failed",
+            message: `The self-check itself failed: ${error instanceof Error ? error.message : String(error)}`,
+            hint: "Run checkAuthSetup directly to see why.",
+          },
+        ],
+      }))
+    : null;
+
   return {
+    selfCheck,
     routes,
     middleware: {
       actor,

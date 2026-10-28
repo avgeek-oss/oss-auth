@@ -1,7 +1,7 @@
 import * as oidc from "openid-client";
 import type { AuthConfig } from "../config.js";
 import { AuthRequestError } from "../errors.js";
-import { deriveKey } from "../keys.js";
+import { deriveKeys } from "../keys.js";
 import { constantTimeEqual } from "../tokens.js";
 import { safeReturnTo } from "./return-to.js";
 import {
@@ -141,7 +141,10 @@ export function createOidcClient(options: OidcClientOptions): OidcClient {
   const timeout = options.timeoutSeconds ?? 5;
   const ttl = (options.discoveryCacheSeconds ?? 3600) * 1000;
   const tolerance = options.clockToleranceSeconds ?? 5;
-  const key = deriveKey(config.secret, config.app, "oidc-transaction");
+  // Seal with the current secret's key; open with any, so a sign-in that
+  // started just before a rotation still finishes.
+  const transactionKeys = deriveKeys(config, "oidc-transaction");
+  const key = transactionKeys[0] ?? raise();
   const cookieName = transactionCookieName(config.app, config.origins.api);
   const issuer = new URL(config.oidc.issuer);
   const insecure = issuer.protocol === "http:" && LOOPBACK.has(issuer.hostname);
@@ -239,7 +242,11 @@ export function createOidcClient(options: OidcClientOptions): OidcClient {
       const transaction =
         sealed === undefined
           ? null
-          : openTransaction(key, sealed, cookieName, now());
+          : transactionKeys.reduce<ReturnType<typeof openTransaction>>(
+              (found, k) =>
+                found ?? openTransaction(k, sealed, cookieName, now()),
+              null,
+            );
       if (transaction === null)
         throw new AuthRequestError(
           "oidc_transaction_invalid",
@@ -307,4 +314,8 @@ export function createOidcClient(options: OidcClientOptions): OidcClient {
       }).href;
     },
   };
+}
+
+function raise(): never {
+  throw new Error("deriveKeys returned no key.");
 }

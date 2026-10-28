@@ -1,7 +1,8 @@
 import type { AuthConfig } from "../config.js";
 import { RateLimitedError, RateLimiterUnavailableError } from "../errors.js";
 import { quoteIdent } from "../identifiers.js";
-import { deriveKey } from "../keys.js";
+import { deriveKeys } from "../keys.js";
+import { sweepRateLimitBuckets } from "../jobs/sweeps.js";
 import type { Sql } from "../postgres/sql.js";
 import { hashToken } from "../tokens.js";
 import {
@@ -87,7 +88,11 @@ export interface RateLimiter {
 export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
   const { sql, config } = options;
   const table = `${quoteIdent(config.schema)}.rate_limit_buckets`;
-  const hmacKey = deriveKey(config.secret, config.app, "rate-limit");
+  // Buckets are keyed under the current secret's key. During a rotation,
+  // a new bucket starts from where the same key's bucket under a previous
+  // secret stood, so the change of key never resets anyone's limit.
+  const [hmacKey, ...previousKeys] = deriveKeys(config, "rate-limit");
+  if (!hmacKey) throw new Error("deriveKeys returned no key.");
   const clock = () => options.now?.() ?? null;
   const T = "coalesce($1::timestamptz, now())";
 
@@ -100,6 +105,8 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
 
   const bucket = (name: string, key: string) =>
     hashToken(hmacKey, `${name}\u0000${key}`);
+  const previousBuckets = (name: string, key: string) =>
+    previousKeys.map((k) => hashToken(k, `${name}\u0000${key}`));
 
   const guard = async <R>(work: () => Promise<R>): Promise<R> => {
     try {
@@ -120,16 +127,29 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
     // row is locked for the statement, so concurrent requests queue.
     const next = `GREATEST(r.tat, ${T}) + $3::bigint * ${US}`;
     const fits = `${next} - ${T} <= $4::bigint * ${US}`;
+    // A new bucket starts at now, or where a previous secret's bucket for
+    // the same key stands ($5), whichever is later.
+    const firstFits = `p.base + $3::bigint * ${US} - ${T} <= $4::bigint * ${US}`;
+    const firstTat = `CASE WHEN ${firstFits} THEN p.base + $3::bigint * ${US} ELSE p.base END`;
     const [row] = await guard(() =>
       sql.query<{ allowed: boolean; ahead: number }>(
         `INSERT INTO ${table} AS r (key_hash, tat, allowed, expires_at)
-         VALUES ($2, ${T} + $3::bigint * ${US}, true, ${T} + $3::bigint * ${US})
+         SELECT $2, ${firstTat}, ${firstFits}, ${firstTat}
+         FROM (SELECT GREATEST(${T}, coalesce(
+           (SELECT max(o.tat) FROM ${table} o WHERE o.key_hash = ANY($5::text[])),
+           ${T})) AS base) p
          ON CONFLICT (key_hash) DO UPDATE SET
            allowed = ${fits},
            tat = CASE WHEN ${fits} THEN ${next} ELSE r.tat END,
            expires_at = CASE WHEN ${fits} THEN ${next} ELSE r.tat END
          RETURNING allowed, ${AHEAD} AS "ahead"`,
-        [clock(), bucket(name, key), interval, window],
+        [
+          clock(),
+          bucket(name, key),
+          interval,
+          window,
+          previousBuckets(name, key),
+        ],
       ),
     );
     if (!row) throw new RateLimiterUnavailableError();
@@ -159,9 +179,9 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       const { interval, window } = shape(policy(name, fallback));
       const [row] = await guard(() =>
         sql.query<{ ahead: number }>(
-          `SELECT ${AHEAD} AS "ahead" FROM ${table}
-           WHERE key_hash = $2 AND tat > ${T}`,
-          [clock(), bucket(name, key)],
+          `SELECT max(${AHEAD}) AS "ahead" FROM ${table}
+           WHERE key_hash = ANY($2::text[]) AND tat > ${T}`,
+          [clock(), [bucket(name, key), ...previousBuckets(name, key)]],
         ),
       );
       const ahead = Math.round(row?.ahead ?? 0);
@@ -188,11 +208,10 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
     },
 
     async purgeExpired() {
-      const rows = await sql.query(
-        `DELETE FROM ${table} WHERE expires_at < ${T} RETURNING 1`,
-        [clock()],
-      );
-      return rows.length;
+      const now = options.now;
+      return (
+        await sweepRateLimitBuckets({ sql, config, ...(now ? { now } : {}) })
+      ).deleted;
     },
   };
 }

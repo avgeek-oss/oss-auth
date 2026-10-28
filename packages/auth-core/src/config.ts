@@ -52,6 +52,19 @@ export interface AuthConfig {
   readonly app: string;
   /** `<APP>_SECRET`: the root of every derived key. At least 32 bytes. */
   readonly secret: string;
+  /**
+   * `<APP>_PREVIOUS_SECRETS`: secrets being rotated out, newest first.
+   * Values made under them (sessions, API keys, OAuth tokens, sign-in
+   * transactions, consent requests, rate limit buckets) are still accepted,
+   * and long-lived ones are re-hashed under `secret` when next used. New
+   * values always use `secret`. Empty outside a rotation.
+   */
+  readonly previousSecrets: readonly string[];
+  /**
+   * `<APP>_SELF_CHECK`: whether `createAuth` runs `checkAuthSetup` in the
+   * background at startup and logs the result. Default true.
+   */
+  readonly selfCheck: boolean;
   readonly oidc: {
     /** `<APP>_OIDC_ISSUER`, exactly as configured. Compared byte for byte. */
     readonly issuer: string;
@@ -353,6 +366,37 @@ const fields = z
       .refine((value) => Buffer.byteLength(value) >= MIN_SECRET_BYTES, {
         error: `must be at least ${MIN_SECRET_BYTES} bytes; generate one with \`openssl rand -base64 48\``,
       }),
+    PREVIOUS_SECRETS: z
+      .string(required("a comma-separated list of secrets"))
+      .default("")
+      .transform((value, ctx) => {
+        const secrets = list(value);
+        if (
+          secrets.some((secret) => Buffer.byteLength(secret) < MIN_SECRET_BYTES)
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            message: `must be comma-separated secrets of at least ${MIN_SECRET_BYTES} bytes each: the earlier values of the SECRET variable`,
+          });
+          return z.NEVER;
+        }
+        if (new Set(secrets).size !== secrets.length) {
+          ctx.addIssue({ code: "custom", message: "lists a secret twice" });
+          return z.NEVER;
+        }
+        return secrets;
+      }),
+    SELF_CHECK: z
+      .string(required("true or false"))
+      .default("true")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        if (normalised !== "true" && normalised !== "false") {
+          ctx.addIssue({ code: "custom", message: "must be true or false" });
+          return z.NEVER;
+        }
+        return normalised === "true";
+      }),
     OIDC_ISSUER: z
       .string(required("the identity provider's issuer URL"))
       .refine(
@@ -622,6 +666,13 @@ const fields = z
         path: ["SESSION_IDLE_TIMEOUT"],
         message: "must not be longer than the session max age",
       });
+    if (value.PREVIOUS_SECRETS.includes(value.SECRET))
+      ctx.addIssue({
+        code: "custom",
+        path: ["PREVIOUS_SECRETS"],
+        message:
+          "must not contain the current secret: list only the secrets it replaced",
+      });
   });
 
 type FieldName = keyof z.input<typeof fields>;
@@ -649,6 +700,7 @@ function redacted(config: AuthConfig) {
   return {
     ...config,
     secret: REDACTED,
+    previousSecrets: config.previousSecrets.map(() => REDACTED),
     oidc: { ...config.oidc, clientSecret: REDACTED },
     scim: {
       ...config.scim,
@@ -704,6 +756,8 @@ export function loadAuthConfig(
   const config: AuthConfig = {
     app,
     secret: v.SECRET,
+    previousSecrets: Object.freeze(v.PREVIOUS_SECRETS),
+    selfCheck: v.SELF_CHECK,
     oidc: {
       issuer: v.OIDC_ISSUER,
       clientId: v.OIDC_CLIENT_ID,

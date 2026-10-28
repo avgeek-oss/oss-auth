@@ -68,6 +68,11 @@ export interface Stack {
   call(path: string, init?: RequestInit): Promise<Response>;
   /** Moves the API's clock by `seconds`. */
   advance(seconds: number): void;
+  /**
+   * Rebuilds the app on the same server and schema with these variables
+   * added to the original ones, as a restart with a new environment would.
+   */
+  rekey(env: Record<string, string>): void;
   close(): Promise<void>;
 }
 
@@ -118,8 +123,10 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     authentikLike: options.authentikLike ?? false,
   });
 
-  const config = loadAuthConfig("posted", {
+  const baseEnv: Record<string, string> = {
     POSTED_SECRET: "test-secret-".repeat(4),
+    // The self-check has its own tests; here it would only add noise.
+    POSTED_SELF_CHECK: "false",
     POSTED_OIDC_ISSUER: mock.issuer,
     POSTED_OIDC_CLIENT_ID: mock.clientId,
     POSTED_OIDC_CLIENT_SECRET: mock.clientSecret,
@@ -130,37 +137,38 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     POSTED_API_ORIGIN: api,
     POSTED_AUTH_SCHEMA: schema,
     ...options.env,
-  });
+  };
 
   let offset = 0;
-  const auth = createAuth<{ plan: string }>({
-    config,
-    sql,
-    hooks: { extendActor: () => ({ plan: "team" }) },
-    now: () => new Date(Date.now() + offset * 1000),
-    ...options.auth,
-  });
+  const now = () => new Date(Date.now() + offset * 1000);
 
-  const app = new Hono();
-  app.route("/auth", auth.routes);
-  app.use("/api/*", auth.middleware.actor, auth.middleware.trustedOrigin);
-  app.get("/api/me", auth.middleware.requireActor, (c) =>
-    c.json({ role: c.get("actor")?.role }),
-  );
-  app.post("/api/members", auth.middleware.requireRole("admin"), (c) =>
-    c.json({ ok: true }),
-  );
-  app.post("/api/danger", auth.middleware.requireRecentAuth(300), (c) =>
-    c.json({ ok: true }),
-  );
-  options.mount?.(app, {
-    auth,
-    config,
-    sql,
-    now: () => new Date(Date.now() + offset * 1000),
-  });
-  handler = (request, env) => app.fetch(request, env);
-
+  /** Builds the config, auth and app for `env`, and serves them. */
+  const build = (env: Record<string, string>) => {
+    const config = loadAuthConfig("posted", env);
+    const auth = createAuth<{ plan: string }>({
+      config,
+      sql,
+      hooks: { extendActor: () => ({ plan: "team" }) },
+      now,
+      ...options.auth,
+    });
+    const app = new Hono();
+    app.route("/auth", auth.routes);
+    app.use("/api/*", auth.middleware.actor, auth.middleware.trustedOrigin);
+    app.get("/api/me", auth.middleware.requireActor, (c) =>
+      c.json({ role: c.get("actor")?.role }),
+    );
+    app.post("/api/members", auth.middleware.requireRole("admin"), (c) =>
+      c.json({ ok: true }),
+    );
+    app.post("/api/danger", auth.middleware.requireRecentAuth(300), (c) =>
+      c.json({ ok: true }),
+    );
+    options.mount?.(app, { auth, config, sql, now });
+    handler = (request, env_) => app.fetch(request, env_);
+    return { config, auth };
+  };
+  let current = build(baseEnv);
   const browser = createBrowser();
   const toWeb = (url: URL) => url.origin === WEB;
   const navigate = async (path: string) => {
@@ -170,8 +178,15 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
 
   return {
     api,
-    config,
-    auth,
+    get config() {
+      return current.config;
+    },
+    get auth() {
+      return current.auth;
+    },
+    rekey(env) {
+      current = build({ ...baseEnv, ...env });
+    },
     mock,
     browser,
     sql,

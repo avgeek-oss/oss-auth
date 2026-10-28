@@ -81,6 +81,26 @@ export function deriveKey(
   );
 }
 
+/**
+ * The keys for `label` during a secret rotation: the one from
+ * `config.secret` first, then one per `config.previousSecrets`, in order.
+ * New values are always made with the first; values are checked against
+ * each in turn, so those made under a previous secret keep working until
+ * it is removed.
+ */
+export function deriveKeys(
+  config: {
+    readonly secret: string;
+    readonly previousSecrets?: readonly string[];
+    readonly app: string;
+  },
+  label: KeyLabel,
+): readonly Buffer[] {
+  return [config.secret, ...(config.previousSecrets ?? [])].map((secret) =>
+    deriveKey(secret, config.app, label),
+  );
+}
+
 /** Derived keys for one app, computed on first use and cached. */
 export interface Keyring {
   /** The key for `label`. Returns a copy, so callers cannot alter the cache. */

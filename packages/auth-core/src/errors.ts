@@ -10,6 +10,7 @@ export const AUTH_ERROR_CODES = [
   "migration_invalid",
   "migration_modified",
   "migration_unknown",
+  "setup_invalid",
   "unauthenticated",
   "forbidden",
   "step_up_required",
@@ -126,6 +127,35 @@ export class MigrationError extends AuthError {
   ) {
     super(code, message);
     this.migration = migration;
+  }
+}
+
+/**
+ * `checkAuthSetup` found errors and was asked to fail on them. The message
+ * lists each one; `report` has them all.
+ */
+export class AuthSetupError extends AuthError {
+  readonly report: {
+    readonly ok: boolean;
+    readonly problems: readonly {
+      readonly level: "error" | "warning";
+      readonly code: string;
+      readonly message: string;
+      readonly hint: string;
+    }[];
+  };
+
+  constructor(report: AuthSetupError["report"]) {
+    super(
+      "setup_invalid",
+      [
+        "The auth setup has errors:",
+        ...report.problems
+          .filter((p) => p.level === "error")
+          .map((p) => `- ${p.code}: ${p.message} ${p.hint}`),
+      ].join("\n"),
+    );
+    this.report = report;
   }
 }
 
