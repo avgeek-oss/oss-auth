@@ -68,8 +68,11 @@ export interface Sessions<Ext extends object> {
   hash(token: string | undefined): string | null;
   /** Revokes one session. Returns whether a live session was revoked. */
   revoke(idHash: string): Promise<boolean>;
-  /** Revokes every live session of a user and returns how many. */
-  revokeAll(userId: string): Promise<number>;
+  /**
+   * Revokes every live session of a user and returns how many. Pass a
+   * transaction as `db` to make it part of a larger change.
+   */
+  revokeAll(userId: string, db?: SqlQueryable): Promise<number>;
   /** A user's live sessions, newest first. */
   list(userId: string): Promise<SessionRecord[]>;
   /**
@@ -176,8 +179,9 @@ export function createSessions<Ext extends object = Record<never, never>>(
          FROM ${sessions} s JOIN ${users} u ON u.id = s.user_id
          WHERE s.id_hash = $2 AND s.revoked_at IS NULL
            AND s.expires_at > ${T} AND s.idle_expires_at > ${T}
-           AND u.active AND u.deleted_at IS NULL`,
-        [now(), idHash],
+           AND u.active AND u.deleted_at IS NULL
+           AND ($3::boolean IS NOT TRUE OR u.role_source = 'scim')`,
+        [now(), idHash, config.roleSource === "scim"],
       );
       if (row === undefined) return null;
       const [slid] = await sql.query<{ idleExpiresAt: Date }>(
@@ -211,8 +215,8 @@ export function createSessions<Ext extends object = Record<never, never>>(
       return (await revokeWhere(sql, "s.id_hash = $2", [idHash])) > 0;
     },
 
-    async revokeAll(userId) {
-      return revokeWhere(sql, "s.user_id = $2", [userId]);
+    async revokeAll(userId, db) {
+      return revokeWhere(db ?? sql, "s.user_id = $2", [userId]);
     },
 
     async list(userId) {

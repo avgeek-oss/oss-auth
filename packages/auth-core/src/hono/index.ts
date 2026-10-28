@@ -390,7 +390,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
       if (outcome.kind === "denied")
         throw new AuthRequestError(
           "sign_in_denied",
-          outcome.reason === "no_role"
+          outcome.reason === "no_role" || outcome.reason === "unassigned"
             ? "You don't have access to this app. Ask an administrator to give you a role."
             : "Your account is not active in this app.",
           { reason: outcome.reason },

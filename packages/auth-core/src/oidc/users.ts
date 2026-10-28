@@ -8,7 +8,8 @@ export type RoleSource =
   "none" | "oidc" | "bootstrap" | "scim" | "admin" | "operator";
 
 /** Why an OIDC sign-in was refused after the provider authenticated it. */
-export type SignInDeniedReason = "no_role" | "user_inactive" | "user_deleted";
+export type SignInDeniedReason =
+  "no_role" | "unassigned" | "user_inactive" | "user_deleted";
 
 /** A row of the `users` table, as auth-core reads it. */
 export interface UserRecord {
@@ -63,14 +64,20 @@ function bootstrapMatches(
 /**
  * Maps validated ID token claims to a user, inside the caller's transaction.
  *
- * - The user is found by `(iss, sub)` and created on first sign-in. Email
- *   and display name are refreshed from the claims every time.
- * - A deleted or deactivated user is refused.
- * - The role comes from {@link resolveRole}. `"none"` refuses the sign-in.
- *   `null` (the claim is missing) keeps a returning user's role; a new user
- *   is refused unless they are the bootstrap admin.
- * - The bootstrap admin (`<APP>_BOOTSTRAP_ADMIN`) becomes `admin` while the
- *   role claim is missing and SCIM has not set their role.
+ * - The user is found by `(iss, sub)`. With
+ *   `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT=true`, a user SCIM created (no `sub`
+ *   yet) is linked on first sign-in by `iss` and `external_id = sub`. Users
+ *   are never linked by email.
+ * - A deleted or deactivated user is refused, and `"none"` from
+ *   {@link resolveRole} always refuses.
+ * - With `<APP>_ROLE_SOURCE=claims` (the default), the role claim sets the
+ *   role. A missing claim keeps the role of a user who has one, and refuses
+ *   a new or never-assigned user unless they are the bootstrap admin, who
+ *   becomes `admin` while the claim is missing.
+ * - With `<APP>_ROLE_SOURCE=scim`, SCIM group membership sets the role and
+ *   sign-in never changes it or creates users: a person SCIM has not
+ *   provisioned and assigned is refused as `unassigned`.
+ * - Email and display name are refreshed from the claims every time.
  *
  * A refusal is returned, not thrown, so the caller decides how to answer.
  */
@@ -85,7 +92,8 @@ export async function signInUser(
     stringClaim(claims.name, 256) ??
     stringClaim(claims.preferred_username, 256);
   const resolved = resolveRole(claims, config.oidc.roleMap);
-  const bootstrap = bootstrapMatches(config, claims);
+  const scimRoles = config.roleSource === "scim";
+  const bootstrap = !scimRoles && bootstrapMatches(config, claims);
 
   const deny = (
     reason: SignInDeniedReason,
@@ -100,8 +108,27 @@ export async function signInUser(
       )
     )[0];
 
+  // A SCIM-provisioned user whose externalId is this subject. Tombstones
+  // are found too, so a deleted user is refused rather than recreated.
+  const selectProvisioned = async () =>
+    config.scim.externalIdIsSubject
+      ? (
+          await tx.query<UserRecord>(
+            `SELECT ${COLUMNS} FROM ${users}
+             WHERE iss = $1 AND sub IS NULL AND external_id = $2 FOR UPDATE`,
+            [claims.iss, claims.sub],
+          )
+        )[0]
+      : undefined;
+
   let existing = await select();
+  let linked = false;
   if (existing === undefined) {
+    existing = await selectProvisioned();
+    linked = existing !== undefined;
+  }
+  if (existing === undefined) {
+    if (scimRoles) return deny("unassigned", null);
     let role: Role;
     let source: RoleSource;
     if (resolved === "none") return deny("no_role", null);
@@ -133,15 +160,21 @@ export async function signInUser(
 
   let role = existing.role;
   let source = existing.roleSource;
-  if (resolved !== null) {
+  if (scimRoles) {
+    if (existing.roleSource !== "scim") return deny("unassigned", existing.id);
+  } else if (resolved !== null) {
     role = resolved;
     source = "oidc";
   } else if (bootstrap && existing.roleSource !== "scim") {
     role = "admin";
     source = "bootstrap";
+  } else if (existing.roleSource === "none") {
+    // Provisioned but never given a role: treat like a new user.
+    return deny("no_role", existing.id);
   }
 
   if (
+    !linked &&
     email === existing.email &&
     displayName === existing.displayName &&
     role === existing.role &&
@@ -150,9 +183,10 @@ export async function signInUser(
     return { kind: "allowed", user: existing, created: false };
 
   const [updated] = await tx.query<UserRecord>(
-    `UPDATE ${users} SET email = $2, display_name = $3, role = $4, role_source = $5
+    `UPDATE ${users} SET sub = $6, email = coalesce($2, email),
+       display_name = coalesce($3, display_name), role = $4, role_source = $5
      WHERE id = $1 RETURNING ${COLUMNS}`,
-    [existing.id, email, displayName, role, source],
+    [existing.id, email, displayName, role, source, claims.sub],
   );
   if (updated === undefined)
     throw new Error("The user vanished during sign-in.");
