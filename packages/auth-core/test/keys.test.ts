@@ -102,6 +102,7 @@ describe("deriveKey", () => {
       "oauth-refresh-token",
       "idempotency",
       "break-glass",
+      "oauth-request",
     ]);
     expect(new Set(KEY_LABELS).size).toBe(KEY_LABELS.length);
   });

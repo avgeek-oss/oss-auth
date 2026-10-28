@@ -8,12 +8,13 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | `@avgeek-oss/auth-core/postgres`              | server  | The `Sql` interface with `pg` and Postgres.js adapters, the migration runner and the auth schema. |
 | `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
 | `@avgeek-oss/auth-core/api-keys`              | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                    |
+| `@avgeek-oss/auth-core/mcp`                   | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.    |
 | `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
 | `@avgeek-oss/auth-core/scim`                  | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                       |
 | `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
 | `@avgeek-oss/auth-core/testing`               | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                   |
 
-The MCP authorization server, the browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
+The browser client and the operator CLI follow in later releases. [ARCHITECTURE.md](ARCHITECTURE.md) has the design, the contract each app implements and the roadmap.
 
 The sign-in and settings screens belong in [`@avgeek-oss/design-system`](https://github.com/avgeek-oss/oss-ds-web) as `patterns/auth`.
 
@@ -43,6 +44,8 @@ POSTED_SCIM_TOKENS=
 POSTED_API_KEY_PREFIX=posted
 POSTED_API_KEY_MAX_TTL_DAYS=365
 POSTED_API_KEY_ALLOW_NO_EXPIRY=false
+POSTED_OAUTH_CLIENTS='[]'
+POSTED_OAUTH_LEGACY_DCR=false
 POSTED_SESSION_MAX_AGE=12h
 POSTED_SESSION_IDLE_TIMEOUT=2h
 POSTED_AUTH_SCHEMA=auth

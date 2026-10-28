@@ -2,6 +2,7 @@ import { z } from "zod";
 import { assertAppId } from "./app-id.js";
 import { AuthConfigError, type ConfigIssue } from "./errors.js";
 import { isValidSchemaName } from "./identifiers.js";
+import { isHttpsUrl, isValidRedirectUri } from "./redirect-uris.js";
 import { isRole, ROLES, type Role, type RoleMap } from "./roles.js";
 
 /** The fewest bytes an app secret may have. */
@@ -9,6 +10,26 @@ export const MIN_SECRET_BYTES = 32;
 
 /** The fewest characters a SCIM bearer token may have. */
 export const MIN_SCIM_TOKEN_LENGTH = 32;
+
+/** The fewest characters a pre-registered OAuth client secret may have. */
+export const MIN_OAUTH_CLIENT_SECRET_LENGTH = 32;
+
+/** An OAuth client registered in `<APP>_OAUTH_CLIENTS`. */
+export interface OAuthClientConfig {
+  /** `client_id`. Not a URL, which would be read as a metadata document. */
+  readonly clientId: string;
+  /** `client_name`, shown on the consent page. */
+  readonly clientName: string;
+  /** `redirect_uris`: `https`, or `http` on a loopback host. */
+  readonly redirectUris: readonly string[];
+  /** `logo_uri`, an `https` URL, or `null`. */
+  readonly logoUri: string | null;
+  /**
+   * `client_secret` for a confidential client, which then authenticates at
+   * the token endpoint with HTTP Basic. `null` for a public PKCE client.
+   */
+  readonly clientSecret: string | null;
+}
 
 /** The longest `<APP>_API_KEY_MAX_TTL_DAYS` accepts: ten years. */
 export const MAX_API_KEY_TTL_DAYS = 3650;
@@ -53,6 +74,16 @@ export interface AuthConfig {
      */
     readonly externalIdIsSubject: boolean;
   };
+  readonly oauth: {
+    /** `<APP>_OAUTH_CLIENTS`: pre-registered OAuth clients. */
+    readonly clients: readonly OAuthClientConfig[];
+    /**
+     * `<APP>_OAUTH_LEGACY_DCR`: accept RFC 7591 dynamic client registration.
+     * Default `false`; MCP has deprecated it in favour of client metadata
+     * documents.
+     */
+    readonly legacyDcr: boolean;
+  };
   readonly apiKeys: {
     /**
      * `<APP>_API_KEY_PREFIX`: the first part of every key, such as
@@ -88,6 +119,81 @@ export interface AuthConfig {
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+const OAUTH_CLIENTS_EXAMPLE =
+  '[{"client_id":"posted-cli","client_name":"Posted CLI","redirect_uris":["http://127.0.0.1/callback"]}]';
+
+/**
+ * Reads `<APP>_OAUTH_CLIENTS`, a JSON array of RFC 7591-style objects:
+ * `client_id`, `client_name`, `redirect_uris`, and optionally `logo_uri`
+ * and `client_secret`. Returns the clients, or the problem as a message.
+ */
+function parseOAuthClients(source: string): OAuthClientConfig[] | string {
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    value = undefined;
+  }
+  if (!Array.isArray(value) || value.length > 100)
+    return `must be a JSON array of up to 100 clients, such as ${OAUTH_CLIENTS_EXAMPLE}`;
+  const clients: OAuthClientConfig[] = [];
+  for (const [index, entry] of value.entries()) {
+    const at = `client ${index + 1}`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry))
+      return `${at} must be an object`;
+    const c = entry as Record<string, unknown>;
+    const known = [
+      "client_id",
+      "client_name",
+      "redirect_uris",
+      "logo_uri",
+      "client_secret",
+    ];
+    const unknown = Object.keys(c).find((key) => !known.includes(key));
+    if (unknown !== undefined) return `${at} has an unknown field, ${unknown}`;
+    if (
+      typeof c.client_id !== "string" ||
+      !/^[A-Za-z0-9._~-]{1,255}$/.test(c.client_id) ||
+      c.client_id.startsWith("dcr_")
+    )
+      return `${at} needs a client_id of 1 to 255 letters, digits, dots, dashes, underscores or tildes, not starting with dcr_`;
+    if (
+      typeof c.client_name !== "string" ||
+      c.client_name.trim() === "" ||
+      c.client_name.length > 200
+    )
+      return `${at} needs a client_name of 1 to 200 characters`;
+    if (
+      !Array.isArray(c.redirect_uris) ||
+      c.redirect_uris.length === 0 ||
+      c.redirect_uris.length > 20 ||
+      !c.redirect_uris.every(isValidRedirectUri)
+    )
+      return `${at} needs 1 to 20 redirect_uris, each https or http on a loopback host, with no fragment`;
+    if (c.logo_uri !== undefined && !isHttpsUrl(c.logo_uri))
+      return `${at} has a logo_uri that is not an https URL`;
+    if (
+      c.client_secret !== undefined &&
+      (typeof c.client_secret !== "string" ||
+        c.client_secret.length < MIN_OAUTH_CLIENT_SECRET_LENGTH ||
+        /\s/.test(c.client_secret))
+    )
+      return `${at} has a client_secret shorter than ${MIN_OAUTH_CLIENT_SECRET_LENGTH} characters or with spaces; generate one with \`openssl rand -base64 48\``;
+    clients.push(
+      Object.freeze({
+        clientId: c.client_id,
+        clientName: c.client_name.trim(),
+        redirectUris: Object.freeze([...(c.redirect_uris as string[])]),
+        logoUri: (c.logo_uri as string | undefined) ?? null,
+        clientSecret: (c.client_secret as string | undefined) ?? null,
+      }),
+    );
+  }
+  if (new Set(clients.map((c) => c.clientId)).size !== clients.length)
+    return "lists the same client_id twice";
+  return clients;
+}
 
 function parseUrl(value: string): URL | null {
   try {
@@ -330,6 +436,28 @@ const fields = z
         }
         return normalised as "claims" | "scim";
       }),
+    OAUTH_CLIENTS: z
+      .string(required("a JSON array of clients"))
+      .default("[]")
+      .transform((value, ctx) => {
+        const clients = parseOAuthClients(value);
+        if (typeof clients === "string") {
+          ctx.addIssue({ code: "custom", message: clients });
+          return z.NEVER;
+        }
+        return clients;
+      }),
+    OAUTH_LEGACY_DCR: z
+      .string(required("true or false"))
+      .default("false")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        if (normalised !== "true" && normalised !== "false") {
+          ctx.addIssue({ code: "custom", message: "must be true or false" });
+          return z.NEVER;
+        }
+        return normalised === "true";
+      }),
     API_KEY_PREFIX: z
       .string(required("2 to 16 lowercase letters or digits"))
       .optional()
@@ -416,6 +544,13 @@ function redacted(config: AuthConfig) {
       ...config.scim,
       tokens: config.scim.tokens.map(() => REDACTED),
     },
+    oauth: {
+      ...config.oauth,
+      clients: config.oauth.clients.map((client) => ({
+        ...client,
+        clientSecret: client.clientSecret === null ? null : REDACTED,
+      })),
+    },
   };
 }
 
@@ -472,6 +607,10 @@ export function loadAuthConfig(
     scim: Object.freeze({
       tokens: Object.freeze(v.SCIM_TOKENS),
       externalIdIsSubject: v.SCIM_EXTERNAL_ID_IS_SUBJECT,
+    }),
+    oauth: Object.freeze({
+      clients: Object.freeze(v.OAUTH_CLIENTS),
+      legacyDcr: v.OAUTH_LEGACY_DCR,
     }),
     apiKeys: Object.freeze({
       prefix:

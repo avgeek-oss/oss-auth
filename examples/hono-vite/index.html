@@ -27,6 +27,27 @@
       <button id="sign-out" hidden>Sign out</button>
     </p>
     <p id="result" role="status"></p>
+    <section id="consent" hidden>
+      <h2>Connect <span id="consent-client"></span>?</h2>
+      <p>
+        It will act for you on <strong id="consent-resource"></strong>, and send
+        you back to <strong id="consent-host"></strong>.
+      </p>
+      <p id="consent-localhost" hidden>
+        That address is on this computer: allow it only if you started the app
+        yourself.
+      </p>
+      <p>
+        <label
+          >Highest role it may use
+          <select id="consent-ceiling"></select>
+        </label>
+      </p>
+      <p>
+        <button id="consent-allow">Allow</button>
+        <button id="consent-deny">Deny</button>
+      </p>
+    </section>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

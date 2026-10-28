@@ -24,11 +24,14 @@ export {
   authEnvNames,
   DEFAULT_ROLE_MAP_VALUES,
   loadAuthConfig,
+  MIN_OAUTH_CLIENT_SECRET_LENGTH,
   MIN_SCIM_TOKEN_LENGTH,
   MIN_SECRET_BYTES,
   parseDuration,
   type AuthConfig,
+  type OAuthClientConfig,
 } from "./config.js";
+export { isValidRedirectUri, redirectMatches } from "./redirect-uris.js";
 export {
   AUTH_ERROR_CODES,
   AuthConfigError,

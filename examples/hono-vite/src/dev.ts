@@ -24,7 +24,8 @@ if (!databaseUrl) {
   process.exit(1);
 }
 
-// The page proxies /auth and /api to the API, so both share the web origin.
+// The page proxies the API's paths, so both share the web origin, which is
+// then also the OAuth issuer.
 const mock = await startMockProvider({
   users: [
     {
@@ -60,6 +61,15 @@ const config = loadAuthConfig("example", {
   EXAMPLE_WEB_ORIGIN: WEB,
   EXAMPLE_API_ORIGIN: WEB,
   EXAMPLE_AUTH_SCHEMA: "example_auth",
+  // An MCP client registered by the operator: a local CLI on any loopback
+  // port. Clients with a metadata document need no registration.
+  EXAMPLE_OAUTH_CLIENTS: JSON.stringify([
+    {
+      client_id: "example-cli",
+      client_name: "Example CLI",
+      redirect_uris: ["http://127.0.0.1/callback"],
+    },
+  ]),
 });
 
 const sql = fromPg(new pg.Pool({ connectionString: databaseUrl }));
@@ -75,6 +85,10 @@ const vite = await createViteServer({
     proxy: {
       "/auth": `http://127.0.0.1:${API_PORT}`,
       "/api": `http://127.0.0.1:${API_PORT}`,
+      "/mcp": `http://127.0.0.1:${API_PORT}`,
+      "/.well-known": `http://127.0.0.1:${API_PORT}`,
+      // The consent page itself is the Vite page; only its API is proxied.
+      "^/oauth/(?!consent(?:\\?|$))": `http://127.0.0.1:${API_PORT}`,
     },
   },
 });

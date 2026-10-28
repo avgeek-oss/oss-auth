@@ -30,6 +30,8 @@ export const KEY_LABELS = [
   "idempotency",
   /** Hashes one-time break-glass sign-in tokens. */
   "break-glass",
+  /** Hashes the ids of pending OAuth consent requests at rest. */
+  "oauth-request",
 ] as const;
 
 /** One of {@link KEY_LABELS}. */

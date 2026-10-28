@@ -48,6 +48,7 @@ describe("loadAuthConfig", () => {
         scopes: ["openid", "email", "profile"],
       },
       scim: { tokens: [], externalIdIsSubject: false },
+      oauth: { clients: [], legacyDcr: false },
       apiKeys: {
         prefix: "posted",
         maxTtlSeconds: 365 * 86400,
@@ -293,6 +294,83 @@ describe("loadAuthConfig", () => {
       expect(
         variables({ ...base, POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT: "yes" }),
       ).toEqual(["POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT"]);
+    });
+  });
+
+  describe("OAuth clients", () => {
+    const client = {
+      client_id: "posted-cli",
+      client_name: " Posted CLI ",
+      redirect_uris: [
+        "http://127.0.0.1/callback",
+        "https://cli.example.com/cb",
+      ],
+    };
+    const secret = "c".repeat(40);
+
+    it("reads pre-registered clients and the DCR switch, and redacts secrets", () => {
+      const config = loadAuthConfig("posted", {
+        ...base,
+        POSTED_OAUTH_CLIENTS: JSON.stringify([
+          client,
+          {
+            client_id: "posted-ci",
+            client_name: "CI",
+            redirect_uris: ["https://ci.example.com/cb"],
+            logo_uri: "https://ci.example.com/logo.png",
+            client_secret: secret,
+          },
+        ]),
+        POSTED_OAUTH_LEGACY_DCR: "true",
+      });
+      expect(config.oauth).toEqual({
+        legacyDcr: true,
+        clients: [
+          {
+            clientId: "posted-cli",
+            clientName: "Posted CLI",
+            redirectUris: client.redirect_uris,
+            logoUri: null,
+            clientSecret: null,
+          },
+          {
+            clientId: "posted-ci",
+            clientName: "CI",
+            redirectUris: ["https://ci.example.com/cb"],
+            logoUri: "https://ci.example.com/logo.png",
+            clientSecret: secret,
+          },
+        ],
+      });
+      expect(JSON.stringify(config)).not.toContain(secret);
+      expect(inspect(config)).not.toContain(secret);
+    });
+
+    it("rejects malformed clients with a reason", () => {
+      const bad: unknown[] = [
+        "{}",
+        [{ ...client, client_id: "https://cli.example.com/meta.json" }],
+        [{ ...client, client_id: "dcr_1" }],
+        [{ ...client, client_name: "" }],
+        [{ ...client, redirect_uris: [] }],
+        [{ ...client, redirect_uris: ["http://cli.example.com/cb"] }],
+        [{ ...client, redirect_uris: ["https://cli.example.com/cb#x"] }],
+        [{ ...client, logo_uri: "http://cli.example.com/logo.png" }],
+        [{ ...client, client_secret: "short" }],
+        [{ ...client, scope: "admin" }],
+        [client, client],
+      ];
+      for (const value of bad)
+        expect(
+          issues({
+            ...base,
+            POSTED_OAUTH_CLIENTS:
+              typeof value === "string" ? value : JSON.stringify(value),
+          }).map((issue) => issue.variable),
+        ).toEqual(["POSTED_OAUTH_CLIENTS"]);
+      expect(variables({ ...base, POSTED_OAUTH_LEGACY_DCR: "maybe" })).toEqual([
+        "POSTED_OAUTH_LEGACY_DCR",
+      ]);
     });
   });
 

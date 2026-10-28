@@ -39,6 +39,12 @@ export interface ActorCredential {
    * enforce it.
    */
   readonly workspace: string | null;
+  /**
+   * App-defined limits an OAuth grant was approved with, such as the boards
+   * it may touch, or `null`. auth-core stores them and never interprets
+   * them: the app must enforce them.
+   */
+  readonly restrictions: Readonly<Record<string, unknown>> | null;
 }
 
 /**
