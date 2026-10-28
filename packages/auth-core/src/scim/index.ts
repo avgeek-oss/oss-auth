@@ -47,8 +47,9 @@ export { SCHEMAS as SCIM_SCHEMAS } from "./discovery.js";
 /** Callbacks that run inside the SCIM change's transaction. */
 export interface ScimHooks {
   /**
-   * A user was deactivated or deleted. Their sessions are already revoked;
-   * revoke anything else they hold here, such as API keys or OAuth grants.
+   * A user was deactivated or deleted. Their sessions and API keys are
+   * already revoked; revoke anything else they hold here, such as OAuth
+   * grants.
    */
   readonly onDeactivate?: (
     userId: string,
@@ -57,7 +58,8 @@ export interface ScimHooks {
   /**
    * With `<APP>_ROLE_SOURCE=scim`, a user's role changed because their
    * groups changed. `null` means no role: the user lost access and their
-   * sessions are already revoked. Revoke credentials above `to` here.
+   * sessions are already revoked. API keys above `to` are already revoked
+   * by the schema; revoke other credentials above `to` here.
    */
   readonly onRoleChange?: (
     userId: string,

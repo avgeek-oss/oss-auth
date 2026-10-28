@@ -18,7 +18,7 @@ export {
   isValidApiKey,
   parseApiKey,
   type ApiKeyParts,
-} from "./api-keys.js";
+} from "./api-keys/format.js";
 export { APP_ID_PATTERN, assertAppId } from "./app-id.js";
 export {
   authEnvNames,

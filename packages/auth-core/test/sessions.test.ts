@@ -101,7 +101,12 @@ describe.skipIf(!databaseUrl).each(adapters)(
           email: expect.any(String),
           displayName: null,
         },
-        credential: { kind: "session", id: session.idHash, ceiling: null },
+        credential: {
+          kind: "session",
+          id: session.idHash,
+          ceiling: null,
+          workspace: null,
+        },
         role: "admin",
         ext: { tier: "gold" },
       });

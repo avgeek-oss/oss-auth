@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { InvalidApiKeyError } from "./errors.js";
+import { InvalidApiKeyError } from "../errors.js";
 
 /**
  * API keys look like `posted_01JBX5E8W6TGGDFXR9NB7QH4PC_<43 characters>_<6 characters>`:

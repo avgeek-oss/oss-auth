@@ -14,6 +14,7 @@ export const AUTH_ERROR_CODES = [
   "forbidden",
   "step_up_required",
   "step_up_failed",
+  "step_up_unavailable",
   "origin_invalid",
   "csrf_header_missing",
   "return_to_invalid",
@@ -22,6 +23,9 @@ export const AUTH_ERROR_CODES = [
   "oidc_callback_invalid",
   "sign_in_denied",
   "logout_token_invalid",
+  "invalid_request",
+  "not_found",
+  "conflict",
 ] as const;
 
 /** One of {@link AUTH_ERROR_CODES}. */
@@ -130,6 +134,7 @@ export type AuthRequestErrorCode = Extract<
   | "forbidden"
   | "step_up_required"
   | "step_up_failed"
+  | "step_up_unavailable"
   | "origin_invalid"
   | "csrf_header_missing"
   | "return_to_invalid"
@@ -138,6 +143,9 @@ export type AuthRequestErrorCode = Extract<
   | "oidc_callback_invalid"
   | "sign_in_denied"
   | "logout_token_invalid"
+  | "invalid_request"
+  | "not_found"
+  | "conflict"
 >;
 
 const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
@@ -145,6 +153,7 @@ const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
   forbidden: 403,
   step_up_required: 401,
   step_up_failed: 403,
+  step_up_unavailable: 403,
   origin_invalid: 403,
   csrf_header_missing: 403,
   return_to_invalid: 400,
@@ -153,6 +162,9 @@ const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
   oidc_callback_invalid: 400,
   sign_in_denied: 403,
   logout_token_invalid: 400,
+  invalid_request: 400,
+  not_found: 404,
+  conflict: 409,
 };
 
 /**
