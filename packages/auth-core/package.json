@@ -14,7 +14,7 @@
     "url": "https://github.com/avgeek-oss/oss-auth/issues"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "sideEffects": false,
   "files": [

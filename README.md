@@ -52,7 +52,7 @@ await migrate(fromPostgresJs(sql), { schema: config.schema });
 
 ## Develop
 
-The packages support Node 24 or later. Development and CI use Node 26 (`.nvmrc`), and CI also builds and tests on Node 24. Requires pnpm 11.
+The packages require Node 26 or later, the version every avgeek-oss app runs on (`.nvmrc`). Requires pnpm 11.
 
 ```sh
 pnpm install

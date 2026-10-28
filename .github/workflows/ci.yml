@@ -17,36 +17,10 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  # Development and verify run on the Node version in .nvmrc. The published
-  # packages support Node 24 and later, so this job keeps that floor tested:
-  # it builds and runs the unit tests on Node 24. Without
-  # AUTH_TEST_DATABASE_URL the Postgres suites are skipped, so it needs no
-  # database service; verify runs them on .nvmrc.
-  node-24:
-    if: github.ref_type != 'tag'
-    runs-on: ubuntu-latest
-    # About 25 seconds.
-    timeout-minutes: 2
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: pnpm test
   verify:
     # A release tag points at a commit that main already verified; the
     # publish job reuses that run's artifact instead of verifying again.
-    # verify is the single gate, so it still runs when node-24 fails and
-    # then fails itself: a job skipped by a failed need would count as
-    # passing for a required check.
-    needs: node-24
-    if: ${{ !cancelled() && github.ref_type != 'tag' }}
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
     # 40 to 75 seconds, including the Postgres image pull.
     timeout-minutes: 4
@@ -81,15 +55,6 @@ jobs:
       # dependencies included.
       - name: Audit dependencies
         run: pnpm audit --audit-level=moderate
-      - name: Require the Node 24 job
-        if: ${{ !cancelled() }}
-        env:
-          NODE_24_RESULT: ${{ needs.node-24.result }}
-        run: |
-          if [ "$NODE_24_RESULT" != "success" ]; then
-            echo "::error::The node-24 job is $NODE_24_RESULT. The packages support Node 24, so its build and unit tests must pass."
-            exit 1
-          fi
       # Only a release needs the tarballs, and it reads them from the main
       # run of the tagged commit.
       - name: Pack tarballs
