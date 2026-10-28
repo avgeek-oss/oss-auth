@@ -6,6 +6,7 @@ import {
   AuthError,
   InvalidApiKeyError,
   isAuthError,
+  MigrationError,
   SecretTooShortError,
   UnknownKeyLabelError,
 } from "../src/index.js";
@@ -24,6 +25,11 @@ describe("errors", () => {
         new InvalidApiKeyError("checksum"),
         "api_key_invalid",
         "InvalidApiKeyError",
+      ],
+      [
+        new MigrationError("migration_modified", "0001_core.sql", "changed"),
+        "migration_modified",
+        "MigrationError",
       ],
     ];
     for (const [error, code, name] of cases) {
@@ -55,6 +61,11 @@ describe("errors", () => {
   it("records why an API key was rejected", () => {
     const error = new InvalidApiKeyError("prefix");
     expect(error.reason).toBe("prefix");
+  });
+
+  it("names the migration at fault", () => {
+    const error = new MigrationError("migration_unknown", "0009_x.sql", "m");
+    expect(error.migration).toBe("0009_x.sql");
   });
 
   it("recognises auth errors by code, including from another copy", () => {

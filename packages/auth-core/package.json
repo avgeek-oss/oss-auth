@@ -20,6 +20,7 @@
   "files": [
     "dist",
     "src",
+    "migrations",
     "README.md",
     "LICENSE",
     "NOTICE"
@@ -29,6 +30,11 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./postgres": {
+      "source": "./src/postgres/index.ts",
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js"
     }
   },
   "publishConfig": {
@@ -41,5 +47,21 @@
   },
   "dependencies": {
     "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "pg": "^8.16.0",
+    "postgres": "^3.4.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "postgres": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "pg": "^8.23.1",
+    "postgres": "^3.4.9"
   }
 }

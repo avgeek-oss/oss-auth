@@ -7,6 +7,9 @@ export const AUTH_ERROR_CODES = [
   "secret_too_short",
   "key_label_unknown",
   "api_key_invalid",
+  "migration_invalid",
+  "migration_modified",
+  "migration_unknown",
 ] as const;
 
 /** One of {@link AUTH_ERROR_CODES}. */
@@ -90,6 +93,21 @@ export class InvalidApiKeyError extends AuthError {
   constructor(reason: InvalidApiKeyReason) {
     super("api_key_invalid", `The API key is invalid (${reason}).`);
     this.reason = reason;
+  }
+}
+
+/** Why the migration runner refused to run. */
+export class MigrationError extends AuthError {
+  /** The migration file at fault. */
+  readonly migration: string;
+
+  constructor(
+    code: "migration_invalid" | "migration_modified" | "migration_unknown",
+    migration: string,
+    message: string,
+  ) {
+    super(code, message);
+    this.migration = migration;
   }
 }
 

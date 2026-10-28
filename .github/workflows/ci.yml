@@ -19,7 +19,9 @@ concurrency:
 jobs:
   # Development and verify run on the Node version in .nvmrc. The published
   # packages support Node 24 and later, so this job keeps that floor tested:
-  # it builds and runs the unit tests on Node 24.
+  # it builds and runs the unit tests on Node 24. Without
+  # AUTH_TEST_DATABASE_URL the Postgres suites are skipped, so it needs no
+  # database service; verify runs them on .nvmrc.
   node-24:
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
@@ -46,8 +48,24 @@ jobs:
     needs: node-24
     if: ${{ !cancelled() && github.ref_type != 'tag' }}
     runs-on: ubuntu-latest
-    # About 40 seconds.
+    # 40 to 75 seconds, including the Postgres image pull.
     timeout-minutes: 4
+    services:
+      postgres:
+        # postgres:18-alpine on 2026-10-28, pinned by its multi-platform
+        # index digest. Update the tag and digest together.
+        image: postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: auth_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AUTH_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

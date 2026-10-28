@@ -46,6 +46,7 @@ export {
   AuthError,
   InvalidApiKeyError,
   isAuthError,
+  MigrationError,
   SecretTooShortError,
   UnknownKeyLabelError,
   type AuthErrorCode,
