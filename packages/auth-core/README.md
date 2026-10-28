@@ -59,22 +59,21 @@ Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "st
 
 Every variable is prefixed with the app id in capitals, such as `POSTED_`.
 
-| Variable                     | Default                | Meaning                                                                                                     |
-| ---------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `<APP>_SECRET`               | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.                                 |
-| `<APP>_OIDC_ISSUER`          | required               | The provider's issuer, exactly as its discovery document states it.                                         |
-| `<APP>_OIDC_CLIENT_ID`       | required               | The client registered for this app.                                                                         |
-| `<APP>_OIDC_CLIENT_SECRET`   | required               | Its secret. The client authenticates with HTTP Basic.                                                       |
-| `<APP>_OIDC_SCOPES`          | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.                                    |
-| `<APP>_OIDC_ROLE_CLAIMS`     | `roles`                | Claims holding roles or groups, comma-separated.                                                            |
-| `<APP>_OIDC_ROLE_MAP`        | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins.                             |
-| `<APP>_BOOTSTRAP_ADMIN`      | unset                  | A verified email or a `sub` made `admin` while no role claim or SCIM says otherwise. For the first sign-in. |
-| `<APP>_SCIM_TOKENS`          | unset                  | SCIM bearer tokens, comma-separated (used from the SCIM release).                                           |
-| `<APP>_WEB_ORIGIN`           | required               | Where the pages live. `returnTo` and `Origin` are checked against it.                                       |
-| `<APP>_API_ORIGIN`           | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.                                      |
-| `<APP>_SESSION_MAX_AGE`      | `12h`                  | Absolute session lifetime.                                                                                  |
-| `<APP>_SESSION_IDLE_TIMEOUT` | `2h`                   | Inactivity limit.                                                                                           |
-| `<APP>_AUTH_SCHEMA`          | `auth`                 | The Postgres schema for the auth tables.                                                                    |
+| Variable                     | Default                | Meaning                                                                         |
+| ---------------------------- | ---------------------- | ------------------------------------------------------------------------------- |
+| `<APP>_SECRET`               | required               | At least 32 bytes; every key is derived from it. `openssl rand -base64 48`.     |
+| `<APP>_OIDC_ISSUER`          | required               | The provider's issuer, exactly as its discovery document states it.             |
+| `<APP>_OIDC_CLIENT_ID`       | required               | The client registered for this app.                                             |
+| `<APP>_OIDC_CLIENT_SECRET`   | required               | Its secret. The client authenticates with HTTP Basic.                           |
+| `<APP>_OIDC_SCOPES`          | `openid email profile` | Scopes to request. authentik needs `entitlements` for its `roles` claim.        |
+| `<APP>_OIDC_ROLE_CLAIMS`     | `roles`                | Claims holding roles or groups, comma-separated.                                |
+| `<APP>_OIDC_ROLE_MAP`        | each role to itself    | JSON from claim value to `viewer`, `member` or `admin`. The highest match wins. |
+| `<APP>_SCIM_TOKENS`          | unset                  | SCIM bearer tokens, comma-separated (used from the SCIM release).               |
+| `<APP>_WEB_ORIGIN`           | required               | Where the pages live. `returnTo` and `Origin` are checked against it.           |
+| `<APP>_API_ORIGIN`           | required               | Where the API lives. The callback is `<APP>_API_ORIGIN/auth/callback`.          |
+| `<APP>_SESSION_MAX_AGE`      | `12h`                  | Absolute session lifetime.                                                      |
+| `<APP>_SESSION_IDLE_TIMEOUT` | `2h`                   | Inactivity limit.                                                               |
+| `<APP>_AUTH_SCHEMA`          | `auth`                 | The Postgres schema for the auth tables.                                        |
 
 ## authentik setup
 
@@ -89,8 +88,9 @@ POSTED_OIDC_CLIENT_ID=posted
 POSTED_OIDC_CLIENT_SECRET=...
 POSTED_OIDC_SCOPES="openid email profile entitlements"
 POSTED_OIDC_ROLE_CLAIMS=roles
-POSTED_BOOTSTRAP_ADMIN=you@example.com
 ```
+
+Roles come only from the provider, so put the first administrator in `posted-admins`. Anyone the provider makes `admin` can configure the app; first-run setup is gated on `requireRole("admin")` in the app.
 
 authentik sends no `iss` parameter in the authorization response and does not advertise it, so the callback validates the ID token's `iss` instead. It ignores `max_age=0`, so step-up always sends `prompt=login` and a positive `max_age`.
 

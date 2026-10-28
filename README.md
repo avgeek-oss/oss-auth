@@ -37,7 +37,6 @@ POSTED_API_ORIGIN=https://api.posted.example.com
 POSTED_OIDC_SCOPES="openid email profile"
 POSTED_OIDC_ROLE_CLAIMS=roles
 POSTED_OIDC_ROLE_MAP='{"viewer":"viewer","member":"member","admin":"admin"}'
-POSTED_BOOTSTRAP_ADMIN=
 POSTED_SCIM_TOKENS=
 POSTED_SESSION_MAX_AGE=12h
 POSTED_SESSION_IDLE_TIMEOUT=2h

@@ -35,15 +35,6 @@ export interface AuthConfig {
      */
     readonly scopes: readonly string[];
   };
-  /**
-   * `<APP>_BOOTSTRAP_ADMIN`: the person made `admin` while neither SCIM nor a
-   * role claim says otherwise, identified by verified email or by `sub`.
-   * `null` when unset.
-   */
-  readonly bootstrapAdmin: {
-    readonly kind: "email" | "sub";
-    readonly value: string;
-  } | null;
   readonly scim: {
     /**
      * `<APP>_SCIM_TOKENS`: accepted bearer tokens. Several allow rotation.
@@ -259,23 +250,6 @@ const fields = z
         }
         return scopes;
       }),
-    BOOTSTRAP_ADMIN: z
-      .string(required("an email address or an OIDC subject"))
-      .optional()
-      .transform((value, ctx) => {
-        if (value === undefined) return null;
-        const trimmed = value.trim();
-        if (trimmed === "" || trimmed.length > 320 || /\p{Cc}/u.test(trimmed)) {
-          ctx.addIssue({
-            code: "custom",
-            message: "must be one email address or one OIDC subject",
-          });
-          return z.NEVER;
-        }
-        return trimmed.includes("@")
-          ? { kind: "email" as const, value: trimmed.toLowerCase() }
-          : { kind: "sub" as const, value: trimmed };
-      }),
     SCIM_TOKENS: z
       .string(required("a comma-separated list of bearer tokens"))
       .default("")
@@ -402,8 +376,6 @@ export function loadAuthConfig(
       }),
       scopes: Object.freeze(v.OIDC_SCOPES),
     },
-    bootstrapAdmin:
-      v.BOOTSTRAP_ADMIN === null ? null : Object.freeze(v.BOOTSTRAP_ADMIN),
     scim: Object.freeze({ tokens: Object.freeze(v.SCIM_TOKENS) }),
     origins: Object.freeze({ web: v.WEB_ORIGIN, api: v.API_ORIGIN }),
     session: Object.freeze({

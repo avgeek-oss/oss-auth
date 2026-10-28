@@ -232,57 +232,6 @@ describe.skipIf(!databaseUrl)("roles at sign-in", () => {
   });
 });
 
-describe.skipIf(!databaseUrl)("bootstrap admin", () => {
-  it("makes the configured subject an admin", async () => {
-    const s = await stack({ env: { POSTED_BOOTSTRAP_ADMIN: "boss" } });
-    s.mock.setLogin({ sub: "boss" });
-    await s.signIn();
-    expect(await role(s)).toBe("admin");
-    const [user] = await rows<{ source: string }>(
-      s,
-      `SELECT role_source AS "source" FROM {schema}.users WHERE sub = 'boss'`,
-    );
-    expect(user?.source).toBe("bootstrap");
-  });
-
-  it("matches a verified email, case-insensitively, and not an unverified one", async () => {
-    const s = await stack({
-      env: { POSTED_BOOTSTRAP_ADMIN: "Boss@Example.COM" },
-    });
-    s.mock.setLogin({ sub: "boss" });
-    await s.signIn();
-    expect(await role(s)).toBe("admin");
-
-    const t = await stack({
-      env: { POSTED_BOOTSTRAP_ADMIN: "boss@example.com" },
-      users: [{ sub: "boss", email: "boss@example.com", emailVerified: false }],
-    });
-    t.mock.setLogin({ sub: "boss" });
-    expect(failure(await t.signIn()).reason).toBe("no_role");
-  });
-
-  it("yields to a role claim and to SCIM", async () => {
-    const s = await stack({
-      env: { POSTED_BOOTSTRAP_ADMIN: "boss" },
-      users: [{ sub: "boss", groups: ["posted-viewers"] }],
-    });
-    s.mock.setLogin({ sub: "boss" });
-    await s.signIn();
-    expect(await role(s)).toBe("viewer");
-
-    s.mock.setUser({ sub: "boss", groups: ["nothing"] });
-    expect(failure(await s.signIn()).reason).toBe("no_role");
-
-    s.mock.setUser({ sub: "boss" });
-    await rows(
-      s,
-      `UPDATE {schema}.users SET role = 'member', role_source = 'scim' WHERE sub = 'boss'`,
-    );
-    await s.signIn();
-    expect(await role(s)).toBe("member");
-  });
-});
-
 describe.skipIf(!databaseUrl)("callback attacks", () => {
   it("rejects a changed state", async () => {
     const s = await stack();
