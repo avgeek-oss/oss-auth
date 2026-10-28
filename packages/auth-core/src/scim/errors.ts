@@ -48,3 +48,49 @@ export const notFound = (what: string) =>
   new ScimError(404, `${what} not found.`);
 export const conflict = (detail: string) =>
   new ScimError(409, detail, "uniqueness");
+
+/** Unique indexes SCIM writes can hit, and the attribute each guards. */
+const UNIQUE: Readonly<Record<string, string>> = {
+  users_user_name_key: "userName",
+  users_iss_external_id_key: "externalId",
+  scim_groups_display_name_key: "displayName",
+  scim_groups_external_id_key: "externalId",
+};
+
+/** Column checks SCIM writes can hit, and the attribute each guards. */
+const CHECKED: Readonly<Record<string, string>> = {
+  users_user_name_check: "userName",
+  users_external_id_check: "externalId",
+  users_given_name_check: "name.givenName",
+  users_family_name_check: "name.familyName",
+  users_display_name_check: "displayName",
+  users_email_check: "emails.value",
+  scim_groups_display_name_check: "displayName",
+  scim_groups_external_id_check: "externalId",
+};
+
+/**
+ * The SCIM answer for a known constraint violation, with a fixed message,
+ * or `null` for any other error, which the caller rethrows. The database's
+ * own message never reaches the client. Reads the constraint name as `pg`
+ * (`constraint`) and Postgres.js (`constraint_name`) report it.
+ */
+export function constraintError(error: unknown): ScimError | null {
+  if (typeof error !== "object" || error === null) return null;
+  const { code, constraint, constraint_name } = error as Record<
+    string,
+    unknown
+  >;
+  const name =
+    typeof constraint === "string"
+      ? constraint
+      : typeof constraint_name === "string"
+        ? constraint_name
+        : null;
+  if (name === null) return null;
+  if (code === "23505" && Object.hasOwn(UNIQUE, name))
+    return conflict(`${UNIQUE[name]} must be unique.`);
+  if (code === "23514" && Object.hasOwn(CHECKED, name))
+    return badRequest(`${CHECKED[name]} is empty or too long.`, "invalidValue");
+  return null;
+}

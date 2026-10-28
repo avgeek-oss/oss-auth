@@ -15,7 +15,13 @@ import {
   schemas,
   serviceProviderConfig,
 } from "./discovery.js";
-import { badRequest, conflict, notFound, ScimError } from "./errors.js";
+import {
+  badRequest,
+  conflict,
+  constraintError,
+  notFound,
+  ScimError,
+} from "./errors.js";
 import { parseFilter, type FilterCondition } from "./filter.js";
 import {
   groupChange,
@@ -81,8 +87,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  *
  * Requests authenticate with a bearer token from `<APP>_SCIM_TOKENS`,
  * compared as HMACs under the `scim-token` key in constant time. Bodies are
- * `application/scim+json` or `application/json`. Errors use the SCIM Error
- * schema.
+ * `application/scim+json` or `application/json`. SCIM errors, including
+ * known constraint violations, use the SCIM Error schema with fixed
+ * messages. Any other error, such as an unexpected database error, is
+ * rethrown for the app's error handler to log, and answers 500.
  *
  * Deactivating a user revokes their sessions; deleting tombstones them.
  * Provisioning a tombstoned user's externalId again revives that user,
@@ -477,11 +485,11 @@ export function createScim(options: CreateScimOptions): Hono {
   app.onError((error, c) => {
     if (error instanceof ScimError)
       return send(c, error.toJSON(), error.status);
-    const code = (error as { code?: unknown }).code;
-    if (code === "23505")
-      return send(c, conflict("The value must be unique.").toJSON(), 409);
-    if (code === "23514")
-      return send(c, badRequest(error.message, "invalidValue").toJSON(), 400);
+    // A race past the checks above can still hit a constraint. Anything
+    // else is rethrown for the app's error handler to log; Hono answers 500
+    // with a generic body.
+    const known = constraintError(error);
+    if (known) return send(c, known.toJSON(), known.status);
     throw error;
   });
 

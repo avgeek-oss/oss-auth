@@ -97,7 +97,7 @@ app.route(
 );
 ```
 
-- **Endpoints:** `/Users` and `/Groups` (GET, POST, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`, authenticated with a bearer token from `<APP>_SCIM_TOKENS`.
+- **Endpoints:** `/Users` and `/Groups` (GET, POST, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`, authenticated with a bearer token from `<APP>_SCIM_TOKENS`. Errors use the SCIM Error schema with fixed messages, such as `userName must be unique.`, and never the database's text; any other error is rethrown to the app's error handler, which should log it, and answers 500.
 - **Filters:** `eq` on `userName` (ignoring case), `externalId`, `id` and `emails.value` or `emails[type eq "work"].value`, joined with `and`; groups on `displayName`, `externalId` and `id`. Other operators answer 400 `invalidFilter`. Lists page with `startIndex` and `count` (at most 200) and honour `attributes` and `excludedAttributes`.
 - **PATCH** accepts `add`, `replace` and `remove` in any case, with paths such as `active`, `name.givenName` and `emails[type eq "work"].value`, or path-less value objects. `"True"` and `"False"` count as booleans. Unknown attributes and the enterprise extension are ignored.
 - **Lifecycle:** `active: false` deactivates and revokes sessions. `DELETE` tombstones the user, removes them from every group and revokes everything; both call `hooks.onDeactivate` in the same transaction. A tombstoned user is gone from SCIM and sign-in refuses them, until the provider provisions the same `externalId` again, as authentik does when someone is assigned back to the application: a `POST` (or a `PUT` to the old id) revives the same user, with the same id and no role until group membership, or in claims mode the next sign-in, gives one. Sessions ended by the deletion stay ended. Nothing else revives a deleted user.
@@ -106,7 +106,7 @@ app.route(
 ### Where roles come from
 
 - **`<APP>_ROLE_SOURCE=claims`** (default). The role claim sets the role at each sign-in, and a claim that maps to nothing takes it away. SCIM manages users and stores groups but does not change roles.
-- **`<APP>_ROLE_SOURCE=scim`** (recommended with authentik). A user's role is the highest role their groups' display names map to through `<APP>_OIDC_ROLE_MAP` (ignoring case), recomputed on every membership change in the same transaction, and `hooks.onRoleChange` runs on every change. With no mapped group the user has no access: their sessions end and sign-in refuses them as `unassigned`. Sign-in never creates users or changes roles in this mode, but still refuses a role claim that maps to nothing.
+- **`<APP>_ROLE_SOURCE=scim`** (recommended with authentik). A user's role is the highest role their groups' display names map to through `<APP>_OIDC_ROLE_MAP` (ignoring case), recomputed on every membership change in the same transaction, and `hooks.onRoleChange` runs on every change. With no mapped group the user has no access: their sessions end and sign-in refuses them as `unassigned`. Sign-in never creates users or changes roles in this mode, but still refuses a role claim that maps to nothing. **Switching an existing deployment from `claims` to `scim` signs everyone out** until SCIM assigns them a role, because sessions are only accepted for users whose role SCIM set.
 
 With `<APP>_SCIM_EXTERNAL_ID_IS_SUBJECT=true`, the first sign-in of a SCIM-provisioned user (no `sub` yet) links to them by issuer and `externalId = sub`. People are never linked by email.
 

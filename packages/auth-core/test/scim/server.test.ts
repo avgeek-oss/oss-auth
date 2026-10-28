@@ -3,6 +3,7 @@ import { loadAuthConfig } from "../../src/index.js";
 import { createScim } from "../../src/scim/index.js";
 import { createSessions } from "../../src/sessions/index.js";
 import { AuthConfigError } from "../../src/errors.js";
+import { constraintError } from "../../src/scim/errors.js";
 import { databaseUrl } from "../postgres/support.js";
 import {
   ISSUER,
@@ -271,16 +272,20 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
       const s = await stack();
       const id = await create(s, "ada@example.com", { externalId: "e1" });
       await create(s, "grace@example.com", { externalId: "e2" });
-      for (const body of [
-        userBody("ADA@example.com"),
-        userBody("someone", { externalId: "e1" }),
-      ]) {
+      for (const [body, detail] of [
+        [userBody("ADA@example.com"), "userName must be unique."],
+        [
+          userBody("someone", { externalId: "e1" }),
+          "externalId must be unique.",
+        ],
+      ] as const) {
         const { status, body: error } = await s.json("POST", "/Users", body);
         expect(status).toBe(409);
-        expect(error).toMatchObject({
+        expect(error).toEqual({
           schemas: [ERROR],
           status: "409",
           scimType: "uniqueness",
+          detail,
         });
       }
       const rename = await s.json(
@@ -694,7 +699,74 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
         userBody("ada", { active: false }),
       );
       expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain("hook failed");
       expect(await userRow(s, id)).toMatchObject({ active: true });
+    });
+
+    it("answers constraint violations with fixed messages and rethrows other database errors", async () => {
+      const s = await stack();
+      await create(s, "ada");
+      const caught = async (query: string) => {
+        try {
+          await s.rows(query, [ISSUER]);
+        } catch (error) {
+          return error;
+        }
+        throw new Error("the query succeeded");
+      };
+      const duplicate = await caught(
+        `INSERT INTO {schema}.users (iss, user_name) VALUES ($1, 'ADA')`,
+      );
+      expect(constraintError(duplicate)?.toJSON()).toEqual({
+        schemas: [ERROR],
+        status: "409",
+        scimType: "uniqueness",
+        detail: "userName must be unique.",
+      });
+      const empty = await caught(
+        `INSERT INTO {schema}.users (iss, user_name) VALUES ($1, '')`,
+      );
+      expect(constraintError(empty)?.toJSON()).toEqual({
+        schemas: [ERROR],
+        status: "400",
+        scimType: "invalidValue",
+        detail: "userName is empty or too long.",
+      });
+      // A trigger's exception names no constraint: it is not ours to answer.
+      const raised = await caught(
+        `UPDATE {schema}.users SET id = gen_random_uuid() WHERE iss = $1`,
+      );
+      expect((raised as { code?: string }).code).toBe("23514");
+      expect(constraintError(raised)).toBeNull();
+      // Postgres.js reports the constraint as constraint_name.
+      expect(
+        constraintError({
+          code: "23505",
+          constraint_name: "scim_groups_display_name_key",
+        })?.message,
+      ).toBe("displayName must be unique.");
+      expect(
+        constraintError({ code: "23505", constraint: "something_else" }),
+      ).toBeNull();
+
+      // Concurrent creates race past the check; every loser gets the same
+      // fixed answer whichever check caught it.
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          s.json("POST", "/Users", userBody("grace")),
+        ),
+      );
+      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+      for (const r of results.filter((r) => r.status !== 201))
+        expect(r).toEqual({
+          status: 409,
+          body: {
+            schemas: [ERROR],
+            status: "409",
+            scimType: "uniqueness",
+            detail: "userName must be unique.",
+          },
+        });
     });
   });
 
