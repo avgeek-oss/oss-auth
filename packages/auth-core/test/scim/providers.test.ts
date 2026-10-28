@@ -90,8 +90,19 @@ describe.skipIf(!databaseUrl)("provider request fixtures", () => {
     // Leaving the app's scope is a DELETE.
     expect((await s.request("DELETE", `/Users/${id}`)).status).toBe(204);
     expect(await user(s, id)).toMatchObject({ deleted: true });
-    // The next full sync tries to recreate the same person: refused.
-    expect((await s.json("POST", "/Users", authentik.user())).status).toBe(409);
+    // Assigned back to the application later, they are POSTed again: the
+    // same row comes back, with no role until the group says so.
+    const back = await s.json("POST", "/Users", authentik.user());
+    expect(back.status).toBe(201);
+    expect(back.body.id).toBe(id);
+    expect(await user(s, id)).toMatchObject({
+      deleted: false,
+      active: true,
+      role: null,
+      source: null,
+    });
+    await s.json("PATCH", `/Groups/${groupId}`, authentik.addMember(id));
+    expect(await user(s, id)).toMatchObject({ role: "admin", source: "scim" });
   });
 
   it("Okta: lookup by userName, create, PUT, group push, PATCH deactivation", async () => {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deriveKey, generateToken, hashToken } from "../../src/index.js";
 import { migrate, quoteIdent, type Sql } from "../../src/postgres/index.js";
@@ -247,6 +248,37 @@ describe.skipIf(!databaseUrl).each(adapters)(
           [ISS],
           /users_identified/,
         );
+      });
+
+      it("lets only an announced revival bring a tombstone back, with no role", async () => {
+        const id = await createUser({ role: "admin", role_source: "scim" });
+        await sql.query(
+          `UPDATE ${t("users")} SET active = false, deactivated_at = now(), deleted_at = now()
+           WHERE id = $1`,
+          [id],
+        );
+        const revive = (announced: string | null, role: string | null) =>
+          sql.transaction(async (tx) => {
+            if (announced !== null)
+              await tx.query(
+                `SELECT set_config('auth_core.revive_user', $1, true)`,
+                [announced],
+              );
+            await tx.query(
+              `UPDATE ${t("users")} SET deleted_at = NULL, active = true, deactivated_at = NULL,
+                 role = $2, role_source = $3 WHERE id = $1`,
+              [id, role, role === null ? null : "scim"],
+            );
+          });
+        await expect(revive(null, null)).rejects.toThrow(/tombstone/);
+        await expect(revive(randomUUID(), null)).rejects.toThrow(/tombstone/);
+        await expect(revive(id, "admin")).rejects.toThrow(/no role/);
+        await revive(id, null);
+        const [row] = await sql.query(
+          `SELECT active, deleted_at AS "deletedAt", role FROM ${t("users")} WHERE id = $1`,
+          [id],
+        );
+        expect(row).toEqual({ active: true, deletedAt: null, role: null });
       });
 
       it("keeps group names unique ignoring case and keeps tombstones out of groups", async () => {

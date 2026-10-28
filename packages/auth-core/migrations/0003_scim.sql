@@ -4,7 +4,8 @@
 -- SCIM's userName and name parts. userName is unique among live users,
 -- ignoring case, so a tombstone never blocks a new person with the same
 -- name. externalId stays unique per issuer for tombstones too
--- (users_iss_external_id_key), so a deleted user cannot be recreated.
+-- (users_iss_external_id_key): provisioning a deleted user's externalId
+-- again revives that row instead of creating a second person.
 ALTER TABLE users
   ADD COLUMN user_name text CHECK (user_name <> '' AND length(user_name) <= 320),
   ADD COLUMN given_name text CHECK (length(given_name) <= 256),
@@ -79,3 +80,33 @@ $$;
 CREATE TRIGGER scim_group_members_before_insert
 BEFORE INSERT ON scim_group_members
 FOR EACH ROW EXECUTE FUNCTION scim_group_members_before_insert();
+
+-- SCIM revives a tombstone when the provider provisions the same
+-- externalId again, as authentik does when someone is unassigned from the
+-- app and later assigned back. Otherwise deletion stays permanent: the
+-- revival must be announced in the same transaction with
+-- set_config('auth_core.revive_user', <id>, true), and the user comes back
+-- with no role. Sessions revoked by the deletion stay revoked.
+CREATE OR REPLACE FUNCTION users_before_update() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+    IF NEW.deleted_at IS NOT NULL
+      OR current_setting('auth_core.revive_user', true) IS DISTINCT FROM OLD.id::text THEN
+      RAISE EXCEPTION 'user % is deleted; a tombstone cannot be restored or changed', OLD.id
+        USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW.role IS NOT NULL OR NEW.role_source IS NOT NULL THEN
+      RAISE EXCEPTION 'user % must come back with no role', OLD.id
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+  IF NEW.id <> OLD.id THEN
+    RAISE EXCEPTION 'user ids never change' USING ERRCODE = 'check_violation';
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END
+$$;

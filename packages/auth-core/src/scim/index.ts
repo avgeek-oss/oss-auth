@@ -85,6 +85,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * schema.
  *
  * Deactivating a user revokes their sessions; deleting tombstones them.
+ * Provisioning a tombstoned user's externalId again revives that user,
+ * with the same id and no role.
  * With `<APP>_ROLE_SOURCE=scim`, every membership change recomputes the
  * members' roles from the groups' display names in the same transaction.
  *
@@ -214,9 +216,64 @@ export function createScim(options: CreateScimOptions): Hono {
     if (clash)
       throw conflict(
         clash.field === "externalId"
-          ? "A user with this externalId exists, or was deleted and cannot be recreated."
-          : "A user with this userName exists.",
+          ? "externalId must be unique."
+          : "userName must be unique.",
       );
+  }
+
+  /** The tombstone with this id, or with this externalId, locked. */
+  async function findTombstone(
+    db: SqlQueryable,
+    by: { readonly id: string } | { readonly externalId: string | null },
+  ): Promise<{ id: string; externalId: string | null } | undefined> {
+    const [column, value] =
+      "id" in by
+        ? ["id", UUID.test(by.id) ? by.id : null]
+        : ["external_id", by.externalId];
+    if (value === null) return undefined;
+    const [row] = await db.query<{ id: string; externalId: string | null }>(
+      `SELECT id, external_id AS "externalId" FROM ${users}
+       WHERE iss = $1 AND ${column} = $2 AND deleted_at IS NOT NULL FOR UPDATE`,
+      [issuer, value],
+    );
+    return row;
+  }
+
+  /**
+   * Brings a tombstoned user back because the provider provisioned their
+   * externalId again: same id, so the OIDC link still works, active as the
+   * body says, and no role until group membership (or, in claims mode, the
+   * next sign-in) gives one. Sessions revoked by the deletion stay revoked.
+   */
+  async function reviveUser(
+    db: SqlQueryable,
+    id: string,
+    fields: ScimUserFields,
+  ): Promise<ScimUserRow> {
+    await assertUniqueUser(db, fields, id);
+    await db.query(`SELECT set_config('auth_core.revive_user', $1, true)`, [
+      id,
+    ]);
+    const [row] = await db.query<ScimUserRow>(
+      `UPDATE ${users} SET deleted_at = NULL, role = NULL, role_source = NULL,
+         user_name = $2, external_id = $3, given_name = $4, family_name = $5,
+         display_name = $6, email = $7, active = $8,
+         deactivated_at = CASE WHEN $8 THEN NULL ELSE deactivated_at END
+       WHERE id = $1 RETURNING ${USER_COLUMNS}`,
+      [
+        id,
+        fields.userName,
+        fields.externalId,
+        fields.givenName,
+        fields.familyName,
+        fields.displayName,
+        fields.email,
+        fields.active,
+      ],
+    );
+    await db.query(`SELECT set_config('auth_core.revive_user', '', true)`);
+    if (!row) throw notFound("User");
+    return row;
   }
 
   /** Applies a change in `active`: revoke on deactivation. */
@@ -525,6 +582,8 @@ export function createScim(options: CreateScimOptions): Hono {
   app.post("/Users", async (c) => {
     const fields = userFields(await readBody(c));
     const row = await sql.transaction(async (tx) => {
+      const tombstone = await findTombstone(tx, fields);
+      if (tombstone) return reviveUser(tx, tombstone.id, fields);
       await assertUniqueUser(tx, fields, null);
       const [created] = await tx.query<ScimUserRow>(
         `INSERT INTO ${users} (iss, user_name, external_id, given_name, family_name,
@@ -551,8 +610,20 @@ export function createScim(options: CreateScimOptions): Hono {
 
   app.put("/Users/:id", async (c) => {
     const body = await readBody(c);
+    const id = c.req.param("id");
     const row = await sql.transaction(async (tx) => {
-      const current = await findUser(tx, c.req.param("id"), true);
+      // A PUT to a deleted user that restates their externalId revives them.
+      const tombstone = await findTombstone(tx, { id });
+      if (tombstone) {
+        const fields = userFields(body);
+        if (
+          fields.externalId === null ||
+          fields.externalId !== tombstone.externalId
+        )
+          throw notFound("User");
+        return reviveUser(tx, tombstone.id, fields);
+      }
+      const current = await findUser(tx, id, true);
       return writeUser(tx, current, userFields(body, current));
     });
     return send(c, userResource(row, base));

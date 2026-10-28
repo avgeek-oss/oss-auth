@@ -105,13 +105,19 @@ describe.skipIf(!databaseUrl)("SCIM users at sign-in", () => {
     expect(all.map((u) => u.sub)).toEqual([null, "ada"]);
   });
 
-  it("refuses a provisioned user who was deleted, instead of recreating them", async () => {
+  it("refuses a deleted user, instead of recreating them, until SCIM provisions them again", async () => {
     const t = await stack({ POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT: "true" });
     const id = await t.provision("ada");
     expect((await t.scim("DELETE", `/Users/${id}`)).status).toBe(204);
     t.s.mock.setLogin({ sub: "ada" });
     expect(failure(await t.s.signIn())).toBe("user_deleted");
     expect(await t.users()).toHaveLength(1);
+    // Revived by SCIM, the same row signs in and takes the claim's role.
+    expect(await t.provision("ada")).toBe(id);
+    expect((await t.s.signIn()).href).toBe(`${WEB}/`);
+    expect(await t.users()).toEqual([
+      { id, sub: "ada", role: "member", source: "oidc" },
+    ]);
   });
 
   it("treats a provisioned user with no role claim as unassigned in claims mode", async () => {
@@ -155,6 +161,27 @@ describe.skipIf(!databaseUrl)("SCIM users at sign-in", () => {
       });
       expect(await t.role()).toBeNull();
       expect(failure(await t.s.signIn())).toBe("unassigned");
+    });
+
+    it("signs a revived user in as the same person once a group gives a role", async () => {
+      const t = await stack(SCIM);
+      const id = await t.provision("ada");
+      await t.addToGroup("posted-admins", id);
+      t.s.mock.setLogin({ sub: "ada" });
+      await t.s.signIn();
+      expect(await t.role()).toBe("admin");
+      await t.scim("DELETE", `/Users/${id}`);
+      expect(await t.role()).toBeNull();
+      expect(failure(await t.s.signIn())).toBe("user_deleted");
+
+      expect(await t.provision("ada")).toBe(id);
+      expect(failure(await t.s.signIn())).toBe("unassigned");
+      await t.addToGroup("posted-members", id);
+      expect((await t.s.signIn()).href).toBe(`${WEB}/`);
+      expect(await t.role()).toBe("member");
+      expect(await t.users()).toEqual([
+        { id, sub: "ada", role: "member", source: "scim" },
+      ]);
     });
 
     it("refuses a user with no mapped group", async () => {

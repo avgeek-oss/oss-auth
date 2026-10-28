@@ -100,7 +100,7 @@ app.route(
 - **Endpoints:** `/Users` and `/Groups` (GET, POST, PUT, PATCH, DELETE), `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`, authenticated with a bearer token from `<APP>_SCIM_TOKENS`.
 - **Filters:** `eq` on `userName` (ignoring case), `externalId`, `id` and `emails.value` or `emails[type eq "work"].value`, joined with `and`; groups on `displayName`, `externalId` and `id`. Other operators answer 400 `invalidFilter`. Lists page with `startIndex` and `count` (at most 200) and honour `attributes` and `excludedAttributes`.
 - **PATCH** accepts `add`, `replace` and `remove` in any case, with paths such as `active`, `name.givenName` and `emails[type eq "work"].value`, or path-less value objects. `"True"` and `"False"` count as booleans. Unknown attributes and the enterprise extension are ignored.
-- **Lifecycle:** `active: false` deactivates and revokes sessions. `DELETE` tombstones the user, removes them from every group and revokes everything. A tombstoned user is gone from SCIM: they cannot be reactivated, and their `externalId` cannot be reused. Both call `hooks.onDeactivate` in the same transaction.
+- **Lifecycle:** `active: false` deactivates and revokes sessions. `DELETE` tombstones the user, removes them from every group and revokes everything; both call `hooks.onDeactivate` in the same transaction. A tombstoned user is gone from SCIM and sign-in refuses them, until the provider provisions the same `externalId` again, as authentik does when someone is assigned back to the application: a `POST` (or a `PUT` to the old id) revives the same user, with the same id and no role until group membership, or in claims mode the next sign-in, gives one. Sessions ended by the deletion stay ended. Nothing else revives a deleted user.
 - **Groups:** display names are unique ignoring case. A PUT without `members` keeps the members, so a rename never empties a group.
 
 ### Where roles come from
@@ -140,7 +140,7 @@ POSTED_OIDC_ROLE_MAP='{"posted-viewers":"viewer","posted-members":"member","post
 POSTED_SCIM_EXTERNAL_ID_IS_SUBJECT=true
 ```
 
-authentik sends user changes as `PUT` and never `PATCH`, membership as group `PATCH` `add` and `remove`, and removes users who leave the application's scope with `DELETE`. Its `externalId` is the hashed user id, the same value as the OIDC `sub` in the default subject mode, which is what makes linking safe.
+authentik sends user changes as `PUT` and never `PATCH`, membership as group `PATCH` `add` and `remove`, and removes users who leave the application's scope with `DELETE`; assigning them back POSTs them again, which revives the same user. Its `externalId` is the hashed user id, the same value as the OIDC `sub` in the default subject mode, which is what makes linking safe.
 
 authentik sends no `iss` parameter in the authorization response and does not advertise it, so the callback validates the ID token's `iss` instead. It ignores `max_age=0`, so step-up always sends `prompt=login` and a positive `max_age`.
 

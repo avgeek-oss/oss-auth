@@ -557,7 +557,7 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
       expect((await startSession(s, id)).token).toEqual(expect.any(String));
     });
 
-    it("tombstones on delete, revokes everything, and never brings the user back", async () => {
+    it("tombstones on delete, revokes everything, and revives on a new POST of the externalId", async () => {
       const s = await stack();
       const id = await create(s, "ada", { externalId: "ext-ada" });
       const g = await group(s, "posted-members", [id]);
@@ -594,25 +594,6 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
         (await s.json("GET", '/Users?filter=userName eq "ada"')).body
           .totalResults,
       ).toBe(0);
-      // The same externalId cannot come back; the userName is free again.
-      expect(
-        (
-          await s.json(
-            "POST",
-            "/Users",
-            userBody("ada", { externalId: "ext-ada" }),
-          )
-        ).status,
-      ).toBe(409);
-      expect(
-        (
-          await s.json(
-            "POST",
-            "/Users",
-            userBody("ada", { externalId: "ext-new" }),
-          )
-        ).status,
-      ).toBe(201);
       // A tombstone cannot join a group.
       expect(
         (
@@ -623,6 +604,83 @@ describe.skipIf(!databaseUrl)("SCIM server", () => {
           )
         ).body,
       ).toMatchObject({ status: "400", scimType: "invalidValue" });
+
+      // The userName is free for someone else, so reviving under it clashes.
+      expect(await create(s, "ada", { externalId: "ext-new" })).not.toBe(id);
+      expect(
+        (
+          await s.json(
+            "POST",
+            "/Users",
+            userBody("ada", { externalId: "ext-ada" }),
+          )
+        ).body,
+      ).toMatchObject({ status: "409", scimType: "uniqueness" });
+      // Provisioned again, Ada comes back as the same row with no role, and
+      // her old session stays revoked.
+      const again = await s.json(
+        "POST",
+        "/Users",
+        userBody("ada.lovelace", { externalId: "ext-ada" }),
+      );
+      expect(again.status).toBe(201);
+      expect(again.body).toMatchObject({
+        id,
+        userName: "ada.lovelace",
+        active: true,
+      });
+      expect(await userRow(s, id)).toMatchObject({
+        role: null,
+        source: null,
+        active: true,
+        deleted: false,
+      });
+      expect(await sessions.lookup(token)).toBeNull();
+      expect(
+        ((await s.json("GET", `/Groups/${g}`)).body.members as unknown[])
+          .length,
+      ).toBe(0);
+    });
+
+    it("revives by PUT only with the same externalId, and gives a role only through groups", async () => {
+      const s = await stack({ POSTED_ROLE_SOURCE: "scim" });
+      const id = await create(s, "ada", { externalId: "ext-ada" });
+      const admins = await group(s, "posted-admins", [id]);
+      expect(await userRow(s, id)).toMatchObject({ role: "admin" });
+      await s.request("DELETE", `/Users/${id}`);
+
+      for (const body of [
+        userBody("ada"),
+        userBody("ada", { externalId: "ext-other" }),
+      ])
+        expect((await s.json("PUT", `/Users/${id}`, body)).status).toBe(404);
+      const revived = await s.json(
+        "PUT",
+        `/Users/${id}`,
+        userBody("ada", { externalId: "ext-ada" }),
+      );
+      expect(revived.status).toBe(200);
+      expect(revived.body.id).toBe(id);
+      expect(await userRow(s, id)).toMatchObject({
+        role: null,
+        source: null,
+        deleted: false,
+      });
+
+      await s.json(
+        "PATCH",
+        `/Groups/${admins}`,
+        patchBody({ op: "add", path: "members", value: [{ value: id }] }),
+      );
+      expect(await userRow(s, id)).toMatchObject({
+        role: "admin",
+        source: "scim",
+      });
+      expect(s.hooks).toEqual([
+        { hook: "role", userId: id, from: null, to: "admin" },
+        { hook: "deactivate", userId: id },
+        { hook: "role", userId: id, from: null, to: "admin" },
+      ]);
     });
 
     it("rolls the change back when a hook fails", async () => {
