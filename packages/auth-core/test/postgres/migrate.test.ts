@@ -16,6 +16,7 @@ import {
 import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
 
 const core = await loadMigrations();
+const BUNDLED = ["0001_core.sql", "0002_sessions_oidc.sql"];
 const extra = (
   name: string,
   body = "CREATE TABLE extra (n int);",
@@ -38,7 +39,7 @@ async function migrationError(
 
 describe("loadMigrations", () => {
   it("loads the bundled migrations in order", () => {
-    expect(core.map((m) => m.name)).toEqual(["0001_core.sql"]);
+    expect(core.map((m) => m.name)).toEqual(BUNDLED);
     expect(core[0]?.sql).toContain("CREATE TABLE users");
   });
 
@@ -149,11 +150,12 @@ describe.skipIf(!databaseUrl).each(adapters)(
         const result = await migrate(sql);
         expect(result).toEqual({
           schema: "auth",
-          applied: ["0001_core.sql"],
+          applied: BUNDLED,
           existing: [],
         });
         expect((await tables("auth")).map((t) => t.name)).toEqual([
           "audit_events",
+          "logout_jtis",
           "schema_migrations",
           "sessions",
           "users",
@@ -171,10 +173,11 @@ describe.skipIf(!databaseUrl).each(adapters)(
       const schema = fresh("custom");
       expect(await migrate(sql, { schema })).toMatchObject({
         schema,
-        applied: ["0001_core.sql"],
+        applied: BUNDLED,
       });
       expect((await tables(schema)).map((t) => t.name)).toEqual([
         "audit_events",
+        "logout_jtis",
         "schema_migrations",
         "sessions",
         "users",
@@ -218,7 +221,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
         expect(await migrate(sql, { schema })).toEqual({
           schema,
           applied: [],
-          existing: ["0001_core.sql"],
+          existing: BUNDLED,
         });
       expect(await ledger(schema)).toEqual(first);
     });
@@ -228,23 +231,23 @@ describe.skipIf(!databaseUrl).each(adapters)(
       await migrate(sql, { schema, migrations: core });
       const result = await migrate(sql, {
         schema,
-        migrations: [...core, extra("0002_extra.sql")],
+        migrations: [...core, extra("0902_extra.sql")],
       });
-      expect(result.applied).toEqual(["0002_extra.sql"]);
-      expect(result.existing).toEqual(["0001_core.sql"]);
+      expect(result.applied).toEqual(["0902_extra.sql"]);
+      expect(result.existing).toEqual(BUNDLED);
       expect((await tables(schema)).map((t) => t.name)).toContain("extra");
     });
 
     it("refuses a migration edited after it was applied", async () => {
       const schema = fresh("edited");
       await migrate(sql, { schema });
-      const edited = [
-        { name: "0001_core.sql", sql: `${core[0]?.sql}\n-- edited\n` },
-      ];
+      const edited = core.map((m, i) =>
+        i === 0 ? { name: m.name, sql: `${m.sql}\n-- edited\n` } : m,
+      );
       const error = await migrationError(
         migrate(sql, {
           schema,
-          migrations: [...edited, extra("0002_extra.sql")],
+          migrations: [...edited, extra("0902_extra.sql")],
         }),
       );
       expect(error.code).toBe("migration_modified");
@@ -256,12 +259,10 @@ describe.skipIf(!databaseUrl).each(adapters)(
     it("accepts the same migration with Windows line endings", async () => {
       const schema = fresh("crlf");
       await migrate(sql, { schema });
-      const crlf = [
-        {
-          name: "0001_core.sql",
-          sql: core[0]?.sql.replaceAll("\n", "\r\n") ?? "",
-        },
-      ];
+      const crlf = core.map((m) => ({
+        name: m.name,
+        sql: m.sql.replaceAll("\n", "\r\n"),
+      }));
       expect(
         (await migrate(sql, { schema, migrations: crlf })).applied,
       ).toEqual([]);
@@ -271,33 +272,33 @@ describe.skipIf(!databaseUrl).each(adapters)(
       const schema = fresh("newer");
       await migrate(sql, {
         schema,
-        migrations: [...core, extra("0002_extra.sql")],
+        migrations: [...core, extra("0902_extra.sql")],
       });
       const error = await migrationError(
         migrate(sql, { schema, migrations: core }),
       );
       expect(error.code).toBe("migration_unknown");
-      expect(error.migration).toBe("0002_extra.sql");
+      expect(error.migration).toBe("0902_extra.sql");
     });
 
     it("refuses a new migration that sorts before an applied one", async () => {
       const schema = fresh("gap");
       await migrate(sql, {
         schema,
-        migrations: [...core, extra("0003_c.sql", "SELECT 3;")],
+        migrations: [...core, extra("0903_c.sql", "SELECT 3;")],
       });
       const error = await migrationError(
         migrate(sql, {
           schema,
           migrations: [
             ...core,
-            extra("0002_b.sql", "SELECT 2;"),
-            extra("0003_c.sql", "SELECT 3;"),
+            extra("0902_b.sql", "SELECT 2;"),
+            extra("0903_c.sql", "SELECT 3;"),
           ],
         }),
       );
       expect(error.code).toBe("migration_invalid");
-      expect(error.migration).toBe("0002_b.sql");
+      expect(error.migration).toBe("0902_b.sql");
     });
 
     it("applies nothing, not even the schema, when a migration fails", async () => {
@@ -307,7 +308,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           schema,
           migrations: [
             ...core,
-            extra("0002_broken.sql", "CREATE TABLE users (id int);"),
+            extra("0902_broken.sql", "CREATE TABLE users (id int);"),
           ],
         }),
       ).rejects.toThrow(/already exists/);
@@ -323,11 +324,13 @@ describe.skipIf(!databaseUrl).each(adapters)(
       const results = await Promise.all(
         Array.from({ length: 6 }, () => migrate(sql, { schema })),
       );
-      expect(results.filter((r) => r.applied.length === 1)).toHaveLength(1);
-      expect(results.filter((r) => r.existing.length === 1)).toHaveLength(5);
-      expect((await ledger(schema)).map((r) => r.name)).toEqual([
-        "0001_core.sql",
-      ]);
+      expect(
+        results.filter((r) => r.applied.length === BUNDLED.length),
+      ).toHaveLength(1);
+      expect(
+        results.filter((r) => r.existing.length === BUNDLED.length),
+      ).toHaveLength(5);
+      expect((await ledger(schema)).map((r) => r.name)).toEqual(BUNDLED);
     });
 
     it("waits for a run that holds the schema's lock", async () => {
@@ -378,7 +381,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
       ).toBe(false);
       release();
       await holder;
-      expect((await run).applied).toEqual(["0001_core.sql"]);
+      expect((await run).applied).toEqual(BUNDLED);
     });
   },
 );

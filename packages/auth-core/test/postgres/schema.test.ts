@@ -242,6 +242,59 @@ describe.skipIf(!databaseUrl).each(adapters)(
       });
     });
 
+    describe("0002", () => {
+      it("records where a role came from, defaulting to none", async () => {
+        const id = await createUser();
+        const [row] = await sql.query<{ source: string }>(
+          `SELECT role_source AS "source" FROM ${t("users")} WHERE id = $1`,
+          [id],
+        );
+        expect(row?.source).toBe("none");
+        for (const source of ["oidc", "bootstrap", "scim", "admin", "operator"])
+          await sql.query(
+            `UPDATE ${t("users")} SET role_source = $2 WHERE id = $1`,
+            [id, source],
+          );
+        await fails(
+          `UPDATE ${t("users")} SET role_source = 'claims' WHERE id = $1`,
+          [id],
+        );
+      });
+
+      it("keys logout token ids by issuer and refuses empty ones", async () => {
+        const insert = (iss: string, jti: string) =>
+          sql.query(
+            `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, $2, now())`,
+            [iss, jti],
+          );
+        await insert(ISS, "j1");
+        await insert("https://other.example", "j1");
+        await expect(insert(ISS, "j1")).rejects.toThrow(/duplicate key/);
+        await fails(
+          `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, '', now())`,
+          [ISS],
+        );
+        await fails(
+          `INSERT INTO ${t("logout_jtis")} (iss, jti, expires_at) VALUES ($1, $2, now())`,
+          [ISS, "x".repeat(256)],
+        );
+      });
+
+      it("indexes sessions by user and revocation", async () => {
+        const [row] = await sql.query<{ names: string[] }>(
+          `SELECT array_agg(indexname::text ORDER BY indexname) AS "names" FROM pg_indexes
+         WHERE schemaname = $1 AND tablename = 'sessions'`,
+          [schema],
+        );
+        expect(row?.names).toEqual([
+          "sessions_expires_at_idx",
+          "sessions_pkey",
+          "sessions_provider_sid_idx",
+          "sessions_user_id_revoked_at_idx",
+        ]);
+      });
+    });
+
     describe("sessions", () => {
       it("stores a hashed id with the provider's details", async () => {
         const userId = await createUser();

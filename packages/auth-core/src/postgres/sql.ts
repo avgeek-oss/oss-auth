@@ -17,7 +17,7 @@ export interface SqlQueryable {
    * Without `params`, `text` may hold several statements; the rows of the
    * last one are returned.
    */
-  query<T extends Row = Row>(
+  query<T extends object = Row>(
     text: string,
     params?: readonly unknown[],
   ): Promise<T[]>;

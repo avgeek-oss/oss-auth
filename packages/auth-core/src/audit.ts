@@ -22,12 +22,16 @@ export type AuditActor =
   | { readonly type: "system" };
 
 /** Which channel changed a user record. */
-export type ChangeSource = "oidc" | "scim" | "admin" | "operator";
+export type ChangeSource = "oidc" | "bootstrap" | "scim" | "admin" | "operator";
 
-/** Why a session ended before its expiry. */
+/**
+ * Why a session ended before its expiry. `replaced` means a new sign-in in
+ * the same browser superseded it.
+ */
 export type SessionRevokeReason =
   | "sign_out"
   | "sign_out_everywhere"
+  | "replaced"
   | "idp_logout"
   | "user_deactivated"
   | "admin"
@@ -74,6 +78,7 @@ export type AuditEvent =
   | EventOf<"user.deleted", { readonly source: ChangeSource }>
   | EventOf<"session.created", { readonly amr: readonly string[] }>
   | EventOf<"session.revoked", { readonly reason: SessionRevokeReason }>
+  | EventOf<"session.reauthenticated", { readonly amr: readonly string[] }>
   | EventOf<
       "sign_in.denied",
       { readonly reason: SignInDeniedReason },
@@ -93,6 +98,7 @@ export const AUDIT_EVENT_TYPES = [
   "user.deleted",
   "session.created",
   "session.revoked",
+  "session.reauthenticated",
   "sign_in.denied",
 ] as const satisfies readonly AuditEventType[];
 

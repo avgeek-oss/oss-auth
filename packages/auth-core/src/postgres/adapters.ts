@@ -51,7 +51,7 @@ function lastRows<T>(result: PgResultLike | PgResultLike[]): T[] {
 }
 
 function pgQueryable(target: Pick<PgPoolLike, "query">): SqlQueryable["query"] {
-  return async <T extends Row = Row>(
+  return async <T extends object = Row>(
     text: string,
     params?: readonly unknown[],
   ) =>
@@ -102,7 +102,7 @@ export function fromPg(pool: PgPoolLike): Sql {
 function postgresJsQueryable(
   target: PostgresJsQueryLike,
 ): SqlQueryable["query"] {
-  return async <T extends Row = Row>(
+  return async <T extends object = Row>(
     text: string,
     params?: readonly unknown[],
   ) => {

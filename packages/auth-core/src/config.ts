@@ -29,7 +29,21 @@ export interface AuthConfig {
     readonly clientSecret: string;
     /** `<APP>_OIDC_ROLE_CLAIMS` and `<APP>_OIDC_ROLE_MAP`. */
     readonly roleMap: RoleMap;
+    /**
+     * `<APP>_OIDC_SCOPES`: scopes requested at sign-in. Always includes
+     * `openid`. authentik needs `entitlements` for its `roles` claim.
+     */
+    readonly scopes: readonly string[];
   };
+  /**
+   * `<APP>_BOOTSTRAP_ADMIN`: the person made `admin` while neither SCIM nor a
+   * role claim says otherwise, identified by verified email or by `sub`.
+   * `null` when unset.
+   */
+  readonly bootstrapAdmin: {
+    readonly kind: "email" | "sub";
+    readonly value: string;
+  } | null;
   readonly scim: {
     /**
      * `<APP>_SCIM_TOKENS`: accepted bearer tokens. Several allow rotation.
@@ -225,6 +239,43 @@ const fields = z
           Record<string, Role>
         >;
       }),
+    OIDC_SCOPES: z
+      .string(required("a space-separated list of scopes"))
+      .default("openid email profile")
+      .transform((value, ctx) => {
+        const scopes = [
+          ...new Set(value.split(/[\s,]+/).filter((s) => s !== "")),
+        ];
+        if (
+          !scopes.includes("openid") ||
+          scopes.some((s) => !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(s))
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            message:
+              'must be space-separated scopes including openid, such as "openid email profile entitlements"',
+          });
+          return z.NEVER;
+        }
+        return scopes;
+      }),
+    BOOTSTRAP_ADMIN: z
+      .string(required("an email address or an OIDC subject"))
+      .optional()
+      .transform((value, ctx) => {
+        if (value === undefined) return null;
+        const trimmed = value.trim();
+        if (trimmed === "" || trimmed.length > 320 || /\p{Cc}/u.test(trimmed)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "must be one email address or one OIDC subject",
+          });
+          return z.NEVER;
+        }
+        return trimmed.includes("@")
+          ? { kind: "email" as const, value: trimmed.toLowerCase() }
+          : { kind: "sub" as const, value: trimmed };
+      }),
     SCIM_TOKENS: z
       .string(required("a comma-separated list of bearer tokens"))
       .default("")
@@ -349,7 +400,10 @@ export function loadAuthConfig(
         claims: Object.freeze(v.OIDC_ROLE_CLAIMS),
         values: v.OIDC_ROLE_MAP,
       }),
+      scopes: Object.freeze(v.OIDC_SCOPES),
     },
+    bootstrapAdmin:
+      v.BOOTSTRAP_ADMIN === null ? null : Object.freeze(v.BOOTSTRAP_ADMIN),
     scim: Object.freeze({ tokens: Object.freeze(v.SCIM_TOKENS) }),
     origins: Object.freeze({ web: v.WEB_ORIGIN, api: v.API_ORIGIN }),
     session: Object.freeze({
