@@ -26,6 +26,8 @@ export const AUTH_ERROR_CODES = [
   "invalid_request",
   "not_found",
   "conflict",
+  "rate_limited",
+  "unavailable",
 ] as const;
 
 /** One of {@link AUTH_ERROR_CODES}. */
@@ -146,6 +148,8 @@ export type AuthRequestErrorCode = Extract<
   | "invalid_request"
   | "not_found"
   | "conflict"
+  | "rate_limited"
+  | "unavailable"
 >;
 
 const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
@@ -165,6 +169,8 @@ const REQUEST_ERROR_STATUS: Readonly<Record<AuthRequestErrorCode, number>> = {
   invalid_request: 400,
   not_found: 404,
   conflict: 409,
+  rate_limited: 429,
+  unavailable: 503,
 };
 
 /**
@@ -187,6 +193,41 @@ export class AuthRequestError extends AuthError {
     super(code, message, options);
     this.status = REQUEST_ERROR_STATUS[code];
     this.reason = options.reason ?? null;
+  }
+}
+
+/**
+ * A rate limit refused the request. `retryAfterSeconds` is the whole number
+ * of seconds after which the same request would be allowed, for the
+ * `Retry-After` header; `reason` is the policy's name.
+ */
+export class RateLimitedError extends AuthRequestError {
+  declare readonly code: "rate_limited";
+  readonly retryAfterSeconds: number;
+
+  constructor(policy: string, retryAfterSeconds: number) {
+    super(
+      "rate_limited",
+      `Too many requests. Try again in ${retryAfterSeconds} second${retryAfterSeconds === 1 ? "" : "s"}.`,
+      { reason: policy },
+    );
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+/**
+ * The rate limiter could not reach its store. Requests it guards are
+ * refused (fail closed) with a generic message; the cause is kept for logs.
+ */
+export class RateLimiterUnavailableError extends AuthRequestError {
+  declare readonly code: "unavailable";
+
+  constructor(options?: ErrorOptions) {
+    super(
+      "unavailable",
+      "The service is temporarily unavailable. Try again shortly.",
+      options,
+    );
   }
 }
 

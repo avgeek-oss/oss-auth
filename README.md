@@ -9,6 +9,7 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | `@avgeek-oss/auth-core/oidc`                  | server  | The OpenID Connect relying party: sign-in, step-up and back-channel logout tokens.                |
 | `@avgeek-oss/auth-core/api-keys`              | server  | Personal API keys with a role ceiling: issue, list, rotate, revoke and verify.                    |
 | `@avgeek-oss/auth-core/mcp`                   | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.    |
+| `@avgeek-oss/auth-core/rate-limits`           | server  | Rate limits in Postgres (GCRA), client IPs behind trusted proxies, and the default policies.      |
 | `@avgeek-oss/auth-core/sessions`              | server  | Sessions with absolute and idle expiry, revocation and step-up.                                   |
 | `@avgeek-oss/auth-core/scim`                  | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                       |
 | `@avgeek-oss/auth-core/hono`                  | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.        |
@@ -46,6 +47,9 @@ POSTED_API_KEY_MAX_TTL_DAYS=365
 POSTED_API_KEY_ALLOW_NO_EXPIRY=false
 POSTED_OAUTH_CLIENTS='[]'
 POSTED_OAUTH_LEGACY_DCR=false
+POSTED_TRUSTED_PROXIES=
+POSTED_TRUSTED_PROXY_HEADER=x-forwarded-for
+POSTED_RATE_LIMITS='{}'
 POSTED_SESSION_MAX_AGE=12h
 POSTED_SESSION_IDLE_TIMEOUT=2h
 POSTED_AUTH_SCHEMA=auth

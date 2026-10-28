@@ -3,6 +3,7 @@ import { loadAuthConfig } from "../../src/index.js";
 import { createAuth, sessionCookieName } from "../../src/hono/index.js";
 import { transactionCookieName, type FetchLike } from "../../src/oidc/index.js";
 import type { Sql } from "../../src/postgres/index.js";
+import type { RateLimiter } from "../../src/rate-limits/index.js";
 
 const ISSUER = "https://auth.example.com/application/o/posted/";
 
@@ -25,6 +26,16 @@ const unusedSql: Sql = {
   transaction: () => Promise.reject(new Error("no transaction expected")),
 };
 
+// These routes are rate limited; with no database, a limiter that allows
+// everything stands in.
+const allowAll: RateLimiter = {
+  policy: () => ({ limit: 1, periodSeconds: 1 }),
+  consume: async () => ({ allowed: true, retryAfterSeconds: 0, remaining: 1 }),
+  check: async () => ({ allowed: true, retryAfterSeconds: 0, remaining: 1 }),
+  enforce: async () => {},
+  purgeExpired: async () => 0,
+};
+
 function auth(api: string, web = "https://posted.example.com") {
   const config = loadAuthConfig("posted", {
     POSTED_SECRET: "s".repeat(32),
@@ -34,7 +45,12 @@ function auth(api: string, web = "https://posted.example.com") {
     POSTED_WEB_ORIGIN: web,
     POSTED_API_ORIGIN: api,
   });
-  return createAuth({ config, sql: unusedSql, oidc: { fetch: discovery } });
+  return createAuth({
+    config,
+    sql: unusedSql,
+    oidc: { fetch: discovery },
+    rateLimiter: allowAll,
+  });
 }
 
 const attributes = (cookie: string | undefined) =>
@@ -147,6 +163,7 @@ describe("cookies", () => {
     const a = createAuth({
       config,
       sql: unusedSql,
+      rateLimiter: allowAll,
       oidc: {
         fetch: async (...args) => {
           calls++;

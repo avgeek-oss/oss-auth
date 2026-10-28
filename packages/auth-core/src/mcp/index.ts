@@ -7,6 +7,7 @@ import type { Auth, AuthEnv, AuthErrorBody } from "../hono/index.js";
 import { quoteIdent } from "../identifiers.js";
 import { deriveKey } from "../keys.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
+import { isLimitError, limitResponse } from "../rate-limits/index.js";
 import { isLoopbackRedirect, redirectMatches } from "../redirect-uris.js";
 import {
   isRole,
@@ -279,6 +280,7 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
   const clock = () => options.now?.() ?? null;
   // $1 is always the clock; null means the database's now().
   const T = "coalesce($1::timestamptz, now())";
+  const limiter = auth.rateLimiter;
   const clients = createClientStore({
     config,
     table: t.clients,
@@ -415,6 +417,24 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
     return form;
   }
 
+  /** The client id a token request presents, from Basic or the form. */
+  function presentedClientId(c: Context, form: URLSearchParams): string | null {
+    const header = c.req.header("authorization");
+    const match = header
+      ? /^basic +([A-Za-z0-9+/=]+)$/i.exec(header.trim())
+      : null;
+    if (match?.[1]) {
+      const decoded = Buffer.from(match[1], "base64").toString("utf8");
+      const colon = decoded.indexOf(":");
+      try {
+        if (colon >= 0) return decodeURIComponent(decoded.slice(0, colon));
+      } catch {
+        return null;
+      }
+    }
+    return form.get("client_id");
+  }
+
   /** Authenticates the client at the token and revocation endpoints. */
   async function authenticateClient(
     c: Context,
@@ -508,6 +528,16 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
   const routes = new Hono<AuthEnv<Ext>>();
 
   routes.onError((error, c) => {
+    if (isLimitError(error))
+      return limitResponse(
+        c,
+        /^\/oauth\/(token|revoke|register)$/.test(c.req.path)
+          ? "oauth"
+          : c.req.path === "/oauth/authorize"
+            ? "plain"
+            : "json",
+        error,
+      );
     if (error instanceof OAuthError) return oauthJson(c, error);
     if (error instanceof AuthRequestError) return authError(c, error);
     throw error;
@@ -553,107 +583,124 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
 
   // Authorization ------------------------------------------------------------
 
-  routes.get("/oauth/authorize", auth.middleware.actor, async (c) => {
-    c.header("Cache-Control", "no-store");
-    const params = new URL(c.req.url).searchParams;
-    // Until the client and redirect URI are known, errors cannot be
-    // redirected: they are shown to the person instead.
-    const refuse = (error: string, description: string) =>
-      c.json({ error, error_description: description, iss: issuer }, 400);
-    for (const key of new Set(params.keys()))
-      if (params.getAll(key).length > 1)
-        return refuse("invalid_request", `${key} is repeated.`);
-    const clientId = params.get("client_id");
-    if (!clientId) return refuse("invalid_request", "client_id is required.");
-    let client: OAuthClient | null;
-    try {
-      client = await clients.resolve(sql, clientId, { fetch: true });
-    } catch (error) {
-      if (error instanceof ClientError)
-        return refuse("invalid_client", error.message);
-      throw error;
-    }
-    if (!client) return refuse("invalid_client", "Unknown client.");
-    const redirectUri = params.get("redirect_uri");
-    if (!redirectUri)
-      return refuse("invalid_request", "redirect_uri is required.");
-    if (!client.redirectUris.some((r) => redirectMatches(r, redirectUri)))
-      return refuse(
-        "invalid_request",
-        "redirect_uri is not registered for this client.",
-      );
+  routes.get(
+    "/oauth/authorize",
+    auth.middleware.rateLimit("oauth.authorize", "ip", { surface: "plain" }),
+    auth.middleware.actor,
+    async (c) => {
+      c.header("Cache-Control", "no-store");
+      const params = new URL(c.req.url).searchParams;
+      // Until the client and redirect URI are known, errors cannot be
+      // redirected: they are shown to the person instead.
+      const refuse = (error: string, description: string) =>
+        c.json({ error, error_description: description, iss: issuer }, 400);
+      for (const key of new Set(params.keys()))
+        if (params.getAll(key).length > 1)
+          return refuse("invalid_request", `${key} is repeated.`);
+      const clientId = params.get("client_id");
+      if (!clientId) return refuse("invalid_request", "client_id is required.");
+      let client: OAuthClient | null;
+      try {
+        const ip = auth.ipKey(c);
+        client = await clients.resolve(sql, clientId, {
+          fetch: true,
+          // Only cache misses reach the network, and only they count.
+          beforeFetch: async (url) => {
+            await limiter.enforce("oauth.metadata.ip", ip);
+            await limiter.enforce("oauth.metadata.host", url.hostname);
+            await limiter.enforce("oauth.metadata.global", "all");
+          },
+        });
+      } catch (error) {
+        if (error instanceof ClientError)
+          return refuse("invalid_client", error.message);
+        throw error;
+      }
+      if (!client) return refuse("invalid_client", "Unknown client.");
+      const redirectUri = params.get("redirect_uri");
+      if (!redirectUri)
+        return refuse("invalid_request", "redirect_uri is required.");
+      if (!client.redirectUris.some((r) => redirectMatches(r, redirectUri)))
+        return refuse(
+          "invalid_request",
+          "redirect_uri is not registered for this client.",
+        );
 
-    const stateParam = params.get("state");
-    const state =
-      stateParam !== null && stateParam.length <= 1024 ? stateParam : null;
-    const back = (values: Record<string, string>) => {
-      const target = new URL(redirectUri);
-      for (const [k, v] of Object.entries(values))
-        target.searchParams.set(k, v);
-      if (state !== null) target.searchParams.set("state", state);
-      target.searchParams.set("iss", issuer);
-      return c.redirect(target.href, 302);
-    };
-    const fail = (error: string, description: string) =>
-      back({ error, error_description: description });
+      const stateParam = params.get("state");
+      const state =
+        stateParam !== null && stateParam.length <= 1024 ? stateParam : null;
+      const back = (values: Record<string, string>) => {
+        const target = new URL(redirectUri);
+        for (const [k, v] of Object.entries(values))
+          target.searchParams.set(k, v);
+        if (state !== null) target.searchParams.set("state", state);
+        target.searchParams.set("iss", issuer);
+        return c.redirect(target.href, 302);
+      };
+      const fail = (error: string, description: string) =>
+        back({ error, error_description: description });
 
-    if (stateParam !== null && state === null)
-      return fail("invalid_request", "state is longer than 1024 characters.");
-    const responseType = params.get("response_type");
-    if (responseType === null)
-      return fail("invalid_request", "response_type is required.");
-    if (responseType !== "code")
-      return fail(
-        "unsupported_response_type",
-        "Only the authorization code flow is supported.",
-      );
-    if (params.get("code_challenge_method") !== "S256")
-      return fail(
-        "invalid_request",
-        "PKCE with code_challenge_method S256 is required.",
-      );
-    const challenge = params.get("code_challenge") ?? "";
-    if (!CHALLENGE.test(challenge))
-      return fail("invalid_request", "code_challenge is missing or malformed.");
-    const resource = byUri.get(params.get("resource") ?? "");
-    if (!resource)
-      return fail(
-        "invalid_target",
-        `resource must be one of: ${resources.map((r) => r.uri).join(", ")}.`,
-      );
-    const scope = requestedRole(params.get("scope"));
-    if (scope === undefined)
-      return fail(
-        "invalid_scope",
-        `Scopes are role names: ${ROLES.join(", ")}.`,
-      );
+      if (stateParam !== null && state === null)
+        return fail("invalid_request", "state is longer than 1024 characters.");
+      const responseType = params.get("response_type");
+      if (responseType === null)
+        return fail("invalid_request", "response_type is required.");
+      if (responseType !== "code")
+        return fail(
+          "unsupported_response_type",
+          "Only the authorization code flow is supported.",
+        );
+      if (params.get("code_challenge_method") !== "S256")
+        return fail(
+          "invalid_request",
+          "PKCE with code_challenge_method S256 is required.",
+        );
+      const challenge = params.get("code_challenge") ?? "";
+      if (!CHALLENGE.test(challenge))
+        return fail(
+          "invalid_request",
+          "code_challenge is missing or malformed.",
+        );
+      const resource = byUri.get(params.get("resource") ?? "");
+      if (!resource)
+        return fail(
+          "invalid_target",
+          `resource must be one of: ${resources.map((r) => r.uri).join(", ")}.`,
+        );
+      const scope = requestedRole(params.get("scope"));
+      if (scope === undefined)
+        return fail(
+          "invalid_scope",
+          `Scopes are role names: ${ROLES.join(", ")}.`,
+        );
 
-    const requestId = generateToken();
-    await sql.query(
-      `INSERT INTO ${t.requests}
+      const requestId = generateToken();
+      await sql.query(
+        `INSERT INTO ${t.requests}
          (id_hash, client_id, redirect_uri, resource, scope, state, code_challenge,
           created_at, expires_at)
        VALUES ($2, $3, $4, $5, $6, $7, $8, ${T}, ${T} + make_interval(secs => $9))`,
-      [
-        clock(),
-        hashToken(keys.request, requestId),
-        client.clientId,
-        redirectUri,
-        resource.uri,
-        scope,
-        state,
-        challenge,
-        CONSENT_TTL_SECONDS,
-      ],
-    );
-    const consent = `${consentPath}?request=${encodeURIComponent(requestId)}`;
-    if (c.get("actor")?.credential.kind === "session")
-      return c.redirect(`${web}${consent}`, 302);
-    return c.redirect(
-      `${issuer}${auth.basePath}/sign-in?returnTo=${encodeURIComponent(consent)}`,
-      302,
-    );
-  });
+        [
+          clock(),
+          hashToken(keys.request, requestId),
+          client.clientId,
+          redirectUri,
+          resource.uri,
+          scope,
+          state,
+          challenge,
+          CONSENT_TTL_SECONDS,
+        ],
+      );
+      const consent = `${consentPath}?request=${encodeURIComponent(requestId)}`;
+      if (c.get("actor")?.credential.kind === "session")
+        return c.redirect(`${web}${consent}`, 302);
+      return c.redirect(
+        `${issuer}${auth.basePath}/sign-in?returnTo=${encodeURIComponent(consent)}`,
+        302,
+      );
+    },
+  );
 
   // Consent ------------------------------------------------------------------
 
@@ -738,135 +785,174 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
     });
   });
 
-  routes.post("/oauth/consent/:id", async (c) => {
-    const current = me(c);
-    const body = await readJson(c);
-    const decision = body.decision;
-    if (decision !== "approve" && decision !== "deny")
-      throw new AuthRequestError(
-        "invalid_request",
-        "decision must be approve or deny.",
-        { reason: "decision" },
-      );
-    const ceiling = body.ceiling;
-    if (decision === "approve") {
-      if (!isRole(ceiling))
+  routes.post(
+    "/oauth/consent/:id",
+    auth.middleware.rateLimit(
+      "oauth.consent",
+      (c) => c.get("actor")?.user.id ?? null,
+    ),
+    async (c) => {
+      const current = me(c);
+      const body = await readJson(c);
+      const decision = body.decision;
+      if (decision !== "approve" && decision !== "deny")
         throw new AuthRequestError(
           "invalid_request",
-          "ceiling must be viewer, member or admin.",
-          { reason: "ceiling" },
+          "decision must be approve or deny.",
+          { reason: "decision" },
         );
-      if (ceiling === "admin") {
-        const refusal = await auth.middleware.requireRecentAuth(
-          ADMIN_GRANT_RECENT_AUTH_SECONDS,
-        )(c, async () => {});
-        if (refusal) return refusal;
+      const ceiling = body.ceiling;
+      if (decision === "approve") {
+        if (!isRole(ceiling))
+          throw new AuthRequestError(
+            "invalid_request",
+            "ceiling must be viewer, member or admin.",
+            { reason: "ceiling" },
+          );
+        if (ceiling === "admin") {
+          const refusal = await auth.middleware.requireRecentAuth(
+            ADMIN_GRANT_RECENT_AUTH_SECONDS,
+          )(c, async () => {});
+          if (refusal) return refusal;
+        }
       }
-    }
-    let restrictions: Readonly<Record<string, unknown>> | null = null;
-    if (decision === "approve" && body.restrictions !== undefined) {
-      const validate = options.hooks?.validateRestrictions;
-      if (!validate)
-        throw new AuthRequestError(
-          "invalid_request",
-          "This app does not accept restrictions.",
-          { reason: "restrictions" },
+      let restrictions: Readonly<Record<string, unknown>> | null = null;
+      if (decision === "approve" && body.restrictions !== undefined) {
+        const validate = options.hooks?.validateRestrictions;
+        if (!validate)
+          throw new AuthRequestError(
+            "invalid_request",
+            "This app does not accept restrictions.",
+            { reason: "restrictions" },
+          );
+        const peek = await sql.transaction((tx) =>
+          pending(tx, c.req.param("id"), current.user.id),
         );
-      const peek = await sql.transaction((tx) =>
-        pending(tx, c.req.param("id"), current.user.id),
-      );
-      const checked = await validate(current, body.restrictions, {
-        clientId: peek.clientId,
-        resource: peek.resource,
-      });
-      if (
-        typeof checked !== "object" ||
-        checked === null ||
-        Array.isArray(checked)
-      )
-        throw new Error("validateRestrictions must return an object.");
-      restrictions = checked;
-    }
-
-    const redirectUri = await sql.transaction(async (tx) => {
-      const request = await pending(tx, c.req.param("id"), current.user.id);
-      const target = new URL(request.redirectUri);
-      const finish = async (values: Record<string, string>) => {
-        await tx.query(
-          `UPDATE ${t.requests} SET decided_at = ${T} WHERE id_hash = $2`,
-          [clock(), request.idHash],
-        );
-        for (const [k, v] of Object.entries(values))
-          target.searchParams.set(k, v);
-        if (request.state !== null)
-          target.searchParams.set("state", request.state);
-        target.searchParams.set("iss", issuer);
-        return target.href;
-      };
-      if (decision === "deny")
-        return finish({
-          error: "access_denied",
-          error_description: "The person declined the request.",
+        const checked = await validate(current, body.restrictions, {
+          clientId: peek.clientId,
+          resource: peek.resource,
         });
-      const [owner] = await tx.query<{ role: Role | null; usable: boolean }>(
-        `SELECT role, active AND deleted_at IS NULL AS "usable"
+        if (
+          typeof checked !== "object" ||
+          checked === null ||
+          Array.isArray(checked)
+        )
+          throw new Error("validateRestrictions must return an object.");
+        restrictions = checked;
+      }
+
+      const redirectUri = await sql.transaction(async (tx) => {
+        const request = await pending(tx, c.req.param("id"), current.user.id);
+        const target = new URL(request.redirectUri);
+        const finish = async (values: Record<string, string>) => {
+          await tx.query(
+            `UPDATE ${t.requests} SET decided_at = ${T} WHERE id_hash = $2`,
+            [clock(), request.idHash],
+          );
+          for (const [k, v] of Object.entries(values))
+            target.searchParams.set(k, v);
+          if (request.state !== null)
+            target.searchParams.set("state", request.state);
+          target.searchParams.set("iss", issuer);
+          return target.href;
+        };
+        if (decision === "deny")
+          return finish({
+            error: "access_denied",
+            error_description: "The person declined the request.",
+          });
+        const [owner] = await tx.query<{ role: Role | null; usable: boolean }>(
+          `SELECT role, active AND deleted_at IS NULL AS "usable"
          FROM ${t.users} WHERE id = $1 FOR SHARE`,
-        [current.user.id],
-      );
-      if (!owner?.usable || owner.role === null)
-        throw new AuthRequestError("forbidden", "Your account has no access.");
-      if (!roleAtLeast(owner.role, ceiling as Role))
-        throw new AuthRequestError(
-          "forbidden",
-          `A connection cannot have a higher role than yours (${owner.role}).`,
-          { reason: "ceiling" },
+          [current.user.id],
         );
-      const [grant] = await tx.query<{ id: string }>(
-        `INSERT INTO ${t.grants}
+        if (!owner?.usable || owner.role === null)
+          throw new AuthRequestError(
+            "forbidden",
+            "Your account has no access.",
+          );
+        if (!roleAtLeast(owner.role, ceiling as Role))
+          throw new AuthRequestError(
+            "forbidden",
+            `A connection cannot have a higher role than yours (${owner.role}).`,
+            { reason: "ceiling" },
+          );
+        const [grant] = await tx.query<{ id: string }>(
+          `INSERT INTO ${t.grants}
            (user_id, client_id, client_name, logo_uri, ceiling, resources,
             restrictions, created_at)
          VALUES ($2, $3, $4, $5, $6, ARRAY[$7::text], $8::text::jsonb, ${T})
          RETURNING id`,
-        [
-          clock(),
-          current.user.id,
-          request.clientId,
-          request.clientName,
-          request.logoUri,
-          ceiling,
-          request.resource,
-          restrictions === null ? null : JSON.stringify(restrictions),
-        ],
-      );
-      if (!grant) throw new Error("INSERT … RETURNING returned no row.");
-      const code = generateToken();
-      await tx.query(
-        `INSERT INTO ${t.codes}
+          [
+            clock(),
+            current.user.id,
+            request.clientId,
+            request.clientName,
+            request.logoUri,
+            ceiling,
+            request.resource,
+            restrictions === null ? null : JSON.stringify(restrictions),
+          ],
+        );
+        if (!grant) throw new Error("INSERT … RETURNING returned no row.");
+        const code = generateToken();
+        await tx.query(
+          `INSERT INTO ${t.codes}
            (code_hash, grant_id, client_id, redirect_uri, resource, code_challenge,
             created_at, expires_at)
          VALUES ($2, $3, $4, $5, $6, $7, ${T}, ${T} + make_interval(secs => $8))`,
-        [
-          clock(),
-          hashToken(keys.code, code),
-          grant.id,
-          request.clientId,
-          request.redirectUri,
-          request.resource,
-          request.codeChallenge,
-          CODE_TTL_SECONDS,
-        ],
-      );
-      return finish({ code });
-    });
-    return c.json({ redirectUri });
-  });
+          [
+            clock(),
+            hashToken(keys.code, code),
+            grant.id,
+            request.clientId,
+            request.redirectUri,
+            request.resource,
+            request.codeChallenge,
+            CODE_TTL_SECONDS,
+          ],
+        );
+        return finish({ code });
+      });
+      return c.json({ redirectUri });
+    },
+  );
 
   // Tokens -------------------------------------------------------------------
 
-  routes.post("/oauth/token", async (c) => {
-    c.header("Cache-Control", "no-store");
-    c.header("Pragma", "no-cache");
-    const form = await readForm(c);
+  routes.post(
+    "/oauth/token",
+    auth.middleware.rateLimit("oauth.token.ip", "ip", { surface: "oauth" }),
+    async (c) => {
+      c.header("Cache-Control", "no-store");
+      c.header("Pragma", "no-cache");
+      const form = await readForm(c);
+      const presented = presentedClientId(c, form) ?? "";
+      await limiter.enforce("oauth.token.client", presented);
+      try {
+        return await exchange(c, form);
+      } catch (error) {
+        // Failed grants and client authentications are counted per client
+        // and IP after the fact, like invalid bearer credentials: a request
+        // that succeeds is never refused and never counted, and a failure
+        // over the limit is answered with a 429 instead of its error.
+        if (
+          error instanceof OAuthError &&
+          (error.error === "invalid_grant" || error.error === "invalid_client")
+        )
+          await limiter.enforce(
+            "oauth.token.failures",
+            `${presented}\u0000${auth.ipKey(c)}`,
+          );
+        throw error;
+      }
+    },
+  );
+
+  async function exchange(
+    c: Context,
+    form: URLSearchParams,
+  ): Promise<Response> {
     const client = await authenticateClient(c, form);
     const grantType = form.get("grant_type");
     const resourceParam = form.get("resource");
@@ -996,66 +1082,74 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
       "unsupported_grant_type",
       "grant_type must be authorization_code or refresh_token.",
     );
-  });
+  }
 
-  routes.post("/oauth/revoke", async (c) => {
-    c.header("Cache-Control", "no-store");
-    const form = await readForm(c);
-    const client = await authenticateClient(c, form);
-    const token = form.get("token") ?? "";
-    await sql.query(
-      `UPDATE ${t.tokens} SET revoked_at = ${T}
+  routes.post(
+    "/oauth/revoke",
+    auth.middleware.rateLimit("oauth.revoke", "ip", { surface: "oauth" }),
+    async (c) => {
+      c.header("Cache-Control", "no-store");
+      const form = await readForm(c);
+      const client = await authenticateClient(c, form);
+      const token = form.get("token") ?? "";
+      await sql.query(
+        `UPDATE ${t.tokens} SET revoked_at = ${T}
        WHERE revoked_at IS NULL AND family_id IN (
          SELECT t.family_id FROM ${t.tokens} t JOIN ${t.grants} g ON g.id = t.grant_id
          WHERE t.token_hash IN ($2, $3) AND g.client_id = $4)`,
-      [
-        clock(),
-        hashToken(keys.access, token),
-        hashToken(keys.refresh, token),
-        client.clientId,
-      ],
-    );
-    return c.body(null, 200);
-  });
+        [
+          clock(),
+          hashToken(keys.access, token),
+          hashToken(keys.refresh, token),
+          client.clientId,
+        ],
+      );
+      return c.body(null, 200);
+    },
+  );
 
   if (config.oauth.legacyDcr)
-    routes.post("/oauth/register", async (c) => {
-      c.header("Cache-Control", "no-store");
-      let body: unknown = null;
-      const text = await c.req.text();
-      if (Buffer.byteLength(text) <= MAX_FORM_BYTES)
+    routes.post(
+      "/oauth/register",
+      auth.middleware.rateLimit("oauth.register", "ip", { surface: "oauth" }),
+      async (c) => {
+        c.header("Cache-Control", "no-store");
+        let body: unknown = null;
+        const text = await c.req.text();
+        if (Buffer.byteLength(text) <= MAX_FORM_BYTES)
+          try {
+            body = JSON.parse(text);
+          } catch {
+            body = null;
+          }
+        let metadata: ReturnType<typeof readClientMetadata>;
         try {
-          body = JSON.parse(text);
-        } catch {
-          body = null;
+          metadata = readClientMetadata(body);
+        } catch (error) {
+          if (error instanceof ClientError)
+            throw new OAuthError("invalid_client_metadata", error.message);
+          throw error;
         }
-      let metadata: ReturnType<typeof readClientMetadata>;
-      try {
-        metadata = readClientMetadata(body);
-      } catch (error) {
-        if (error instanceof ClientError)
-          throw new OAuthError("invalid_client_metadata", error.message);
-        throw error;
-      }
-      const registered = await clients.register(
-        sql,
-        `dcr_${randomUUID()}`,
-        metadata,
-      );
-      return c.json(
-        {
-          client_id: registered.clientId,
-          client_id_issued_at: Math.floor(Date.now() / 1000),
-          client_name: registered.clientName,
-          redirect_uris: registered.redirectUris,
-          ...(registered.logoUri ? { logo_uri: registered.logoUri } : {}),
-          token_endpoint_auth_method: "none",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-        },
-        201,
-      );
-    });
+        const registered = await clients.register(
+          sql,
+          `dcr_${randomUUID()}`,
+          metadata,
+        );
+        return c.json(
+          {
+            client_id: registered.clientId,
+            client_id_issued_at: Math.floor(Date.now() / 1000),
+            client_name: registered.clientName,
+            redirect_uris: registered.redirectUris,
+            ...(registered.logoUri ? { logo_uri: registered.logoUri } : {}),
+            token_endpoint_auth_method: "none",
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+          },
+          201,
+        );
+      },
+    );
 
   // Connected apps -----------------------------------------------------------
 
@@ -1172,13 +1266,21 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
         );
       };
       const header = c.req.header("authorization");
-      const match = header ? /^bearer +([^\s]+) *$/i.exec(header) : null;
-      if (!match?.[1])
-        return refuse(
-          401,
-          header ? "invalid_token" : null,
-          "A bearer token is required.",
-        );
+      if (header === undefined)
+        return refuse(401, null, "A bearer token is required.");
+      // Only invalid tokens count, and a valid token is never refused, so a
+      // neighbour's bad tokens cannot throttle good ones.
+      const invalid = async (message: string) => {
+        try {
+          await limiter.enforce("bearer.invalid", auth.ipKey(c));
+        } catch (error) {
+          if (isLimitError(error)) return limitResponse(c, "json", error);
+          throw error;
+        }
+        return refuse(401, "invalid_token", message);
+      };
+      const match = /^bearer +([^\s]+) *$/i.exec(header);
+      if (!match?.[1]) return invalid("A bearer token is required.");
       const tokenHash = hashToken(keys.access, match[1]);
       const [row] = await sql.query<{
         grantId: string;
@@ -1202,9 +1304,7 @@ export function createMcpAuth<Ext extends object = Record<never, never>>(
         [clock(), scimRoles, tokenHash, resource.uri],
       );
       if (!row)
-        return refuse(
-          401,
-          "invalid_token",
+        return invalid(
           "The access token is invalid, expired or not for this resource.",
         );
       const user = {

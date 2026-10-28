@@ -22,6 +22,7 @@ const BUNDLED = [
   "0003_scim.sql",
   "0004_api_keys.sql",
   "0005_oauth.sql",
+  "0006_rate_limits.sql",
 ];
 const extra = (
   name: string,
@@ -167,6 +168,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           "oauth_grants",
           "oauth_requests",
           "oauth_tokens",
+          "rate_limit_buckets",
           "schema_migrations",
           "scim_group_members",
           "scim_groups",
@@ -196,6 +198,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
         "oauth_grants",
         "oauth_requests",
         "oauth_tokens",
+        "rate_limit_buckets",
         "schema_migrations",
         "scim_group_members",
         "scim_groups",

@@ -4,6 +4,14 @@ import { AuthConfigError } from "../errors.js";
 import { quoteIdent } from "../identifiers.js";
 import { deriveKey } from "../keys.js";
 import type { Sql, SqlQueryable } from "../postgres/sql.js";
+import {
+  clientIpResolver,
+  createRateLimiter,
+  ipLimitKey,
+  isLimitError,
+  limitResponse,
+  type RateLimiter,
+} from "../rate-limits/index.js";
 import { maxRole, type Role } from "../roles.js";
 import { createSessions, type Sessions } from "../sessions/index.js";
 import { constantTimeEqual, hashToken } from "../tokens.js";
@@ -80,6 +88,12 @@ export interface CreateScimOptions {
   readonly hooks?: ScimHooks;
   /** Where the app mounts the sub-app, for `meta.location`. Default `/scim/v2`. */
   readonly basePath?: string;
+  /**
+   * The rate limiter, such as `auth.rateLimiter`. Created when left out.
+   * Each token may make `scim` requests (3000 a minute by default), and
+   * invalid tokens count towards `bearer.invalid` per IP.
+   */
+  readonly rateLimiter?: RateLimiter;
 }
 
 const CONTENT_TYPE = "application/scim+json; charset=utf-8";
@@ -114,6 +128,8 @@ export function createScim(options: CreateScimOptions): Hono {
       },
     ]);
   const sessions = options.sessions ?? createSessions({ sql, config });
+  const limiter = options.rateLimiter ?? createRateLimiter({ sql, config });
+  const clientIp = clientIpResolver(config.rateLimits);
   const hooks = options.hooks ?? {};
   const base = `${config.origins.api}${(options.basePath ?? "/scim/v2").replace(/\/$/, "")}`;
   const key = deriveKey(config.secret, config.app, "scim-token");
@@ -499,11 +515,20 @@ export function createScim(options: CreateScimOptions): Hono {
   app.use("*", async (c, next) => {
     const header = c.req.header("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/i.exec(header);
+    const presented = hashToken(key, match?.[1] ?? "");
     let ok = false;
-    if (match) {
-      const presented = hashToken(key, match[1] ?? "");
-      for (const hash of accepted)
-        if (constantTimeEqual(presented, hash)) ok = true;
+    for (const hash of accepted)
+      if (match && constantTimeEqual(presented, hash)) ok = true;
+    const ip = ipLimitKey(clientIp(c) ?? "unknown");
+    try {
+      // A valid token has its own budget; invalid ones count per IP.
+      await limiter.enforce(
+        ok ? "scim" : "bearer.invalid",
+        ok ? presented : ip,
+      );
+    } catch (error) {
+      if (isLimitError(error)) return limitResponse(c, "scim", error);
+      throw error;
     }
     if (!ok) {
       c.header("WWW-Authenticate", 'Bearer realm="SCIM"');

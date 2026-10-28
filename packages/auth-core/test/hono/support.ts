@@ -96,10 +96,14 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
   const schema = uniqueSchema("flow");
   await migrate(sql, { schema });
 
-  let handler: (request: Request) => Response | Promise<Response> = () =>
+  let handler: (
+    request: Request,
+    env: unknown,
+  ) => Response | Promise<Response> = () =>
     new Response("starting", { status: 503 });
+  // The env carries the socket, which rate limits key on.
   const server = createServer(
-    getRequestListener((request) => handler(request)),
+    getRequestListener((request, env) => handler(request, env)),
   );
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -155,7 +159,7 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     sql,
     now: () => new Date(Date.now() + offset * 1000),
   });
-  handler = (request) => app.fetch(request);
+  handler = (request, env) => app.fetch(request, env);
 
   const browser = createBrowser();
   const toWeb = (url: URL) => url.origin === WEB;

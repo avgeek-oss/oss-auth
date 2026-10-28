@@ -103,6 +103,7 @@ describe("deriveKey", () => {
       "idempotency",
       "break-glass",
       "oauth-request",
+      "rate-limit",
     ]);
     expect(new Set(KEY_LABELS).size).toBe(KEY_LABELS.length);
   });

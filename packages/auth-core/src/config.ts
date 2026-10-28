@@ -2,6 +2,12 @@ import { z } from "zod";
 import { assertAppId } from "./app-id.js";
 import { AuthConfigError, type ConfigIssue } from "./errors.js";
 import { isValidSchemaName } from "./identifiers.js";
+import {
+  parseTrustedProxies,
+  TRUSTED_PROXY_HEADERS,
+  type TrustedProxyHeader,
+} from "./rate-limits/ip.js";
+import type { RateLimitPolicy } from "./rate-limits/policy.js";
 import { isHttpsUrl, isValidRedirectUri } from "./redirect-uris.js";
 import { isRole, ROLES, type Role, type RoleMap } from "./roles.js";
 
@@ -84,6 +90,22 @@ export interface AuthConfig {
      */
     readonly legacyDcr: boolean;
   };
+  readonly rateLimits: {
+    /**
+     * `<APP>_TRUSTED_PROXIES`: CIDRs of the proxies in front of the API,
+     * whose forwarding header is believed. Empty by default: the socket
+     * peer is the client.
+     */
+    readonly trustedProxies: readonly string[];
+    /**
+     * `<APP>_TRUSTED_PROXY_HEADER`: the one forwarding header the trusted
+     * proxies set, `x-forwarded-for` (default) or `forwarded` (RFC 7239).
+     * The other is ignored.
+     */
+    readonly proxyHeader: TrustedProxyHeader;
+    /** `<APP>_RATE_LIMITS`: policies that replace the defaults, by name. */
+    readonly policies: Readonly<Record<string, RateLimitPolicy>>;
+  };
   readonly apiKeys: {
     /**
      * `<APP>_API_KEY_PREFIX`: the first part of every key, such as
@@ -119,6 +141,51 @@ export interface AuthConfig {
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Reads `<APP>_RATE_LIMITS`: a JSON object from policy name to
+ * `{ "limit": n, "periodSeconds": n, "burst"?: n }`. Returns the policies,
+ * or the problem as a message.
+ */
+function parseRateLimits(
+  source: string,
+): Readonly<Record<string, RateLimitPolicy>> | string {
+  let value: unknown;
+  try {
+    value = JSON.parse(source);
+  } catch {
+    value = undefined;
+  }
+  const example = '{"oauth.token.ip":{"limit":300,"periodSeconds":60}}';
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return `must be a JSON object from policy name to a policy, such as ${example}`;
+  // A null prototype, so that no name resolves to an Object.prototype member.
+  const out = Object.create(null) as Record<string, RateLimitPolicy>;
+  const whole = (n: unknown, max: number): n is number =>
+    typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= max;
+  for (const [name, entry] of Object.entries(value)) {
+    if (!/^[a-z][a-z0-9._-]{0,63}$/.test(name))
+      return `has an invalid policy name, ${JSON.stringify(name).slice(0, 70)}`;
+    const p = entry as Record<string, unknown> | null;
+    if (
+      typeof p !== "object" ||
+      p === null ||
+      Object.keys(p).some(
+        (k) => !["limit", "periodSeconds", "burst"].includes(k),
+      ) ||
+      !whole(p.limit, 1_000_000) ||
+      !whole(p.periodSeconds, 86400) ||
+      (p.burst !== undefined && !whole(p.burst, 1_000_000))
+    )
+      return `${name} must be { "limit": 1 to 1000000, "periodSeconds": 1 to 86400, "burst"?: 1 to 1000000 }`;
+    out[name] = Object.freeze({
+      limit: p.limit,
+      periodSeconds: p.periodSeconds,
+      ...(p.burst === undefined ? {} : { burst: p.burst as number }),
+    });
+  }
+  return Object.freeze(out);
+}
 
 const OAUTH_CLIENTS_EXAMPLE =
   '[{"client_id":"posted-cli","client_name":"Posted CLI","redirect_uris":["http://127.0.0.1/callback"]}]';
@@ -458,6 +525,49 @@ const fields = z
         }
         return normalised === "true";
       }),
+    TRUSTED_PROXIES: z
+      .string(required("a comma-separated list of CIDRs"))
+      .default("")
+      .transform((value, ctx) => {
+        const entries = list(value);
+        try {
+          parseTrustedProxies(entries);
+        } catch (error) {
+          ctx.addIssue({
+            code: "custom",
+            message: `must be comma-separated addresses or CIDRs, such as 10.0.0.0/8,fd00::/8: ${(error as Error).message}`,
+          });
+          return z.NEVER;
+        }
+        return entries;
+      }),
+    TRUSTED_PROXY_HEADER: z
+      .string(required("x-forwarded-for or forwarded"))
+      .default("x-forwarded-for")
+      .transform((value, ctx) => {
+        const normalised = value.trim().toLowerCase();
+        const header = TRUSTED_PROXY_HEADERS.find((h) => h === normalised);
+        if (!header) {
+          ctx.addIssue({
+            code: "custom",
+            message:
+              "must be x-forwarded-for (the default) or forwarded, the header your trusted proxies set",
+          });
+          return z.NEVER;
+        }
+        return header;
+      }),
+    RATE_LIMITS: z
+      .string(required("a JSON object"))
+      .default("{}")
+      .transform((value, ctx) => {
+        const policies = parseRateLimits(value);
+        if (typeof policies === "string") {
+          ctx.addIssue({ code: "custom", message: policies });
+          return z.NEVER;
+        }
+        return policies;
+      }),
     API_KEY_PREFIX: z
       .string(required("2 to 16 lowercase letters or digits"))
       .optional()
@@ -611,6 +721,11 @@ export function loadAuthConfig(
     oauth: Object.freeze({
       clients: Object.freeze(v.OAUTH_CLIENTS),
       legacyDcr: v.OAUTH_LEGACY_DCR,
+    }),
+    rateLimits: Object.freeze({
+      trustedProxies: Object.freeze(v.TRUSTED_PROXIES),
+      proxyHeader: v.TRUSTED_PROXY_HEADER,
+      policies: v.RATE_LIMITS,
     }),
     apiKeys: Object.freeze({
       prefix:

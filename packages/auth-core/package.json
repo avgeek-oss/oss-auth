@@ -51,6 +51,11 @@
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
     },
+    "./rate-limits": {
+      "@avgeek-oss/source": "./src/rate-limits/index.ts",
+      "types": "./dist/rate-limits/index.d.ts",
+      "import": "./dist/rate-limits/index.js"
+    },
     "./sessions": {
       "@avgeek-oss/source": "./src/sessions/index.ts",
       "types": "./dist/sessions/index.d.ts",
