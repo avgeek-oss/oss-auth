@@ -111,7 +111,14 @@ export interface ClientStore {
   resolve(
     db: SqlQueryable,
     clientId: string,
-    options: { readonly fetch: boolean },
+    options: {
+      readonly fetch: boolean;
+      /**
+       * Runs before a metadata document is fetched, that is on a cache miss
+       * only, with the document's URL. Throw to stop the fetch.
+       */
+      readonly beforeFetch?: (url: URL) => Promise<void>;
+    },
   ): Promise<OAuthClient | null>;
   /** Stores a dynamic registration and returns it. */
   register(
@@ -160,7 +167,7 @@ export function createClientStore(options: {
   }
 
   return {
-    async resolve(db, clientId, { fetch }) {
+    async resolve(db, clientId, { fetch, beforeFetch }) {
       const fromConfig = configured.get(clientId);
       if (fromConfig) {
         await syncConfigured(db, fromConfig);
@@ -190,6 +197,7 @@ export function createClientStore(options: {
           clientSecret: null,
         };
       if (!fetch) return null;
+      await beforeFetch?.(new URL(clientId));
       let document: { value: unknown; cacheSeconds: number };
       try {
         document = await fetchMetadataDocument(

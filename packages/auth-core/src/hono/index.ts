@@ -19,6 +19,16 @@ import { postgresJtiStore } from "../oidc/jti-store.js";
 import { verifyLogoutToken } from "../oidc/logout.js";
 import { signInUser, type SignInOutcome } from "../oidc/users.js";
 import type { Sql } from "../postgres/sql.js";
+import {
+  clientIpResolver,
+  createRateLimiter,
+  ipLimitKey,
+  isLimitError,
+  limitResponse,
+  type LimitSurface,
+  type RateLimiter,
+  type RateLimitPolicy,
+} from "../rate-limits/index.js";
 import { isRole, roleAtLeast, type Role } from "../roles.js";
 import {
   createSessions,
@@ -85,6 +95,15 @@ export interface CreateAuthOptions<Ext extends object> {
   };
   /** The current time, for tests. Defaults to the real clock. */
   readonly now?: () => Date;
+  /**
+   * The address of the request's peer, for runtimes other than
+   * `@hono/node-server` (whose socket address is used by default), or for
+   * a platform that hands over the client's address directly.
+   * `<APP>_TRUSTED_PROXIES` still applies to what it returns.
+   */
+  readonly getClientIp?: (c: Context) => string | null | undefined;
+  /** A rate limiter to share with other components. Created when left out. */
+  readonly rateLimiter?: RateLimiter;
 }
 
 /** What {@link createAuth} returns. */
@@ -125,6 +144,21 @@ export interface Auth<Ext extends object> {
      * a cross-site page cannot send one, and they ignore cookies.
      */
     readonly trustedOrigin: MiddlewareHandler<AuthEnv<Ext>>;
+    /**
+     * Limits requests under the policy `name` (one of the defaults, one set
+     * in `<APP>_RATE_LIMITS`, or `fallback`), keyed by the client's IP (the
+     * /64 for IPv6) or by what `key` returns; `null` skips the limit. Over
+     * the limit it answers 429 with `Retry-After` in `surface`'s shape
+     * (default JSON); if the store fails, 503.
+     */
+    readonly rateLimit: (
+      name: string,
+      key?: "ip" | ((c: Context<AuthEnv<Ext>>) => string | null),
+      options?: {
+        readonly fallback?: RateLimitPolicy;
+        readonly surface?: LimitSurface;
+      },
+    ) => MiddlewareHandler<AuthEnv<Ext>>;
   };
   readonly sessions: Sessions<Ext>;
   /** The API key service, or `null` when no key prefix is configured. */
@@ -136,6 +170,12 @@ export interface Auth<Ext extends object> {
   readonly basePath: string;
   /** The app's `hooks.extendActor`, for actors made elsewhere (MCP tokens). */
   readonly extendActor: (user: ActorUser) => Promise<Ext>;
+  /** The rate limiter every auth-core route uses. */
+  readonly rateLimiter: RateLimiter;
+  /** The client's address, after `<APP>_TRUSTED_PROXIES`, or `null`. */
+  readonly clientIp: (c: Context) => string | null;
+  /** The per-IP limit key: the address, or the /64 for IPv6. */
+  readonly ipKey: (c: Context) => string;
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -154,6 +194,7 @@ function errorResponse(
   error: AuthRequestError,
   extra: { stepUpUrl?: string } = {},
 ): Response {
+  if (isLimitError(error)) return limitResponse(c, "json", error);
   c.header("Cache-Control", "no-store");
   return c.json(
     {
@@ -256,6 +297,43 @@ export function createAuth<Ext extends object = Record<never, never>>(
             : {}),
           ...(clock ? { now: clock } : {}),
         });
+  const rateLimiter =
+    options.rateLimiter ??
+    createRateLimiter({ sql, config, ...(clock ? { now: clock } : {}) });
+  const clientIp = clientIpResolver(
+    config.rateLimits.trustedProxies,
+    options.getClientIp,
+  );
+  const ipKey = (c: Context) => ipLimitKey(clientIp(c) ?? "unknown");
+
+  /** Runs `work`, answering a limit refusal or a store failure itself. */
+  const limited = async (
+    c: Context,
+    surface: LimitSurface,
+    work: () => Promise<unknown>,
+  ): Promise<Response | null> => {
+    try {
+      await work();
+      return null;
+    } catch (error) {
+      if (isLimitError(error)) return limitResponse(c, surface, error);
+      throw error;
+    }
+  };
+
+  const rateLimit: Auth<Ext>["middleware"]["rateLimit"] =
+    (name, key = "ip", limitOptions = {}) =>
+    async (c, next) => {
+      const value = key === "ip" ? ipKey(c) : key(c);
+      if (value !== null) {
+        const refusal = await limited(c, limitOptions.surface ?? "json", () =>
+          rateLimiter.enforce(name, value, limitOptions.fallback),
+        );
+        if (refusal) return refusal;
+      }
+      await next();
+    };
+
   const jtis = postgresJtiStore(config.schema);
   let jwks:
     { uri: string; keys: ReturnType<typeof createRemoteJWKSet> } | undefined;
@@ -278,6 +356,14 @@ export function createAuth<Ext extends object = Record<never, never>>(
     if (token !== null) {
       const found =
         apiKeys && token !== "" ? await apiKeys.verify(token) : null;
+      // Only invalid keys count, and a valid key is never refused, so a
+      // neighbour's bad keys cannot throttle good ones.
+      if (!found) {
+        const failed = await limited(c, "json", () =>
+          rateLimiter.enforce("bearer.invalid", ipKey(c)),
+        );
+        if (failed) return failed;
+      }
       c.set("actor", found?.actor ?? null);
       c.set("session", null);
       c.set("apiKey", found?.key ?? null);
@@ -376,7 +462,10 @@ export function createAuth<Ext extends object = Record<never, never>>(
     throw error;
   });
 
-  routes.get("/sign-in", async (c) => {
+  const oidcLimit = rateLimit("oidc", "ip", { surface: "plain" });
+  const userKey = (c: Context<AuthEnv<Ext>>) => c.get("actor")?.user.id ?? null;
+
+  routes.get("/sign-in", oidcLimit, async (c) => {
     const start = await oidc.start({
       purpose: "sign-in",
       returnTo: c.req.query("returnTo") ?? null,
@@ -389,7 +478,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
     return c.redirect(start.url, 302);
   });
 
-  routes.get("/step-up", actor, async (c) => {
+  routes.get("/step-up", oidcLimit, actor, async (c) => {
     const session = c.get("session");
     if (!session) throw unauthenticated();
     const start = await oidc.start({
@@ -406,7 +495,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
     return c.redirect(start.url, 302);
   });
 
-  routes.get("/callback", async (c) => {
+  routes.get("/callback", oidcLimit, async (c) => {
     const sealed = getCookie(c, oidc.transactionCookie);
     deleteCookie(c, oidc.transactionCookie, cookieOptions);
     c.header("Cache-Control", "no-store");
@@ -536,49 +625,55 @@ export function createAuth<Ext extends object = Record<never, never>>(
     });
   });
 
-  routes.post("/backchannel-logout", async (c) => {
-    c.header("Cache-Control", "no-store");
-    const form = await c.req
-      .parseBody()
-      .catch(() => ({}) as Record<string, unknown>);
-    const token = (form as Record<string, unknown>).logout_token;
-    if (typeof token !== "string")
-      throw new AuthRequestError(
-        "logout_token_invalid",
-        "The request has no logout_token.",
-        { reason: "missing" },
-      );
-    const metadata = (await oidc.configuration()).serverMetadata();
-    if (!metadata.jwks_uri)
-      throw new AuthRequestError(
-        "oidc_unavailable",
-        "The provider publishes no keys.",
-      );
-    if (jwks?.uri !== metadata.jwks_uri)
-      jwks = {
-        uri: metadata.jwks_uri,
-        keys: createRemoteJWKSet(new URL(metadata.jwks_uri)),
-      };
-    const logout = await verifyLogoutToken(token, {
-      issuer: metadata.issuer,
-      clientId: config.oidc.clientId,
-      keys: jwks.keys,
-      clockToleranceSeconds: oidc.clockToleranceSeconds,
-      now: nowMs,
-    });
-    // Recording the jti and revoking commit together: if the revocation
-    // fails, the provider's retry of the same token still works.
-    await sql.transaction(async (tx) => {
-      if (!(await jtis.remember(tx, logout.iss, logout.jti, logout.expiresAt)))
+  routes.post(
+    "/backchannel-logout",
+    rateLimit("oidc.backchannel-logout"),
+    async (c) => {
+      c.header("Cache-Control", "no-store");
+      const form = await c.req
+        .parseBody()
+        .catch(() => ({}) as Record<string, unknown>);
+      const token = (form as Record<string, unknown>).logout_token;
+      if (typeof token !== "string")
         throw new AuthRequestError(
           "logout_token_invalid",
-          "The logout token was already used.",
-          { reason: "replay" },
+          "The request has no logout_token.",
+          { reason: "missing" },
         );
-      await sessions.revokeForProvider(logout, tx);
-    });
-    return c.body(null, 200);
-  });
+      const metadata = (await oidc.configuration()).serverMetadata();
+      if (!metadata.jwks_uri)
+        throw new AuthRequestError(
+          "oidc_unavailable",
+          "The provider publishes no keys.",
+        );
+      if (jwks?.uri !== metadata.jwks_uri)
+        jwks = {
+          uri: metadata.jwks_uri,
+          keys: createRemoteJWKSet(new URL(metadata.jwks_uri)),
+        };
+      const logout = await verifyLogoutToken(token, {
+        issuer: metadata.issuer,
+        clientId: config.oidc.clientId,
+        keys: jwks.keys,
+        clockToleranceSeconds: oidc.clockToleranceSeconds,
+        now: nowMs,
+      });
+      // Recording the jti and revoking commit together: if the revocation
+      // fails, the provider's retry of the same token still works.
+      await sql.transaction(async (tx) => {
+        if (
+          !(await jtis.remember(tx, logout.iss, logout.jti, logout.expiresAt))
+        )
+          throw new AuthRequestError(
+            "logout_token_invalid",
+            "The logout token was already used.",
+            { reason: "replay" },
+          );
+        await sessions.revokeForProvider(logout, tx);
+      });
+      return c.body(null, 200);
+    },
+  );
 
   // API keys ---------------------------------------------------------------
 
@@ -652,7 +747,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
     });
   });
 
-  routes.post("/api-keys", async (c) => {
+  routes.post("/api-keys", rateLimit("api-keys.write", userKey), async (c) => {
     const current = me(c);
     const body = await readJson(c);
     const { name, ceiling, workspace } = body;
@@ -705,30 +800,34 @@ export function createAuth<Ext extends object = Record<never, never>>(
     return c.json({ key: issued.key, apiKey: keyView(issued.record) }, 201);
   });
 
-  routes.post("/api-keys/:id/rotate", async (c) => {
-    const current = me(c);
-    const body = await readJson(c);
-    const grace = body.graceSeconds ?? 0;
-    if (typeof grace !== "number")
-      throw new AuthRequestError(
-        "invalid_request",
-        "graceSeconds must be a number of seconds.",
-        { reason: "grace" },
-      );
-    const service = keyService();
-    const existing = await service.get(c.req.param("id"));
-    if (!existing || existing.userId !== current.user.id)
-      throw new AuthRequestError("not_found", "No such API key.");
-    if (existing.ceiling === "admin") {
-      const refusal = recentAuthRefusal(c, ADMIN_KEY_RECENT_AUTH);
-      if (refusal) return refusal;
-    }
-    const issued = await service.rotate(existing.id, {
-      graceSeconds: grace,
-      userId: current.user.id,
-    });
-    return c.json({ key: issued.key, apiKey: keyView(issued.record) }, 201);
-  });
+  routes.post(
+    "/api-keys/:id/rotate",
+    rateLimit("api-keys.write", userKey),
+    async (c) => {
+      const current = me(c);
+      const body = await readJson(c);
+      const grace = body.graceSeconds ?? 0;
+      if (typeof grace !== "number")
+        throw new AuthRequestError(
+          "invalid_request",
+          "graceSeconds must be a number of seconds.",
+          { reason: "grace" },
+        );
+      const service = keyService();
+      const existing = await service.get(c.req.param("id"));
+      if (!existing || existing.userId !== current.user.id)
+        throw new AuthRequestError("not_found", "No such API key.");
+      if (existing.ceiling === "admin") {
+        const refusal = recentAuthRefusal(c, ADMIN_KEY_RECENT_AUTH);
+        if (refusal) return refusal;
+      }
+      const issued = await service.rotate(existing.id, {
+        graceSeconds: grace,
+        userId: current.user.id,
+      });
+      return c.json({ key: issued.key, apiKey: keyView(issued.record) }, 201);
+    },
+  );
 
   routes.delete("/api-keys/:id", async (c) => {
     const current = me(c);
@@ -749,6 +848,7 @@ export function createAuth<Ext extends object = Record<never, never>>(
       requireRole,
       requireRecentAuth,
       trustedOrigin,
+      rateLimit,
     },
     sessions,
     apiKeys,
@@ -759,5 +859,8 @@ export function createAuth<Ext extends object = Record<never, never>>(
       options.hooks?.extendActor
         ? await options.hooks.extendActor(user)
         : ({} as Ext),
+    rateLimiter,
+    clientIp,
+    ipKey,
   };
 }
