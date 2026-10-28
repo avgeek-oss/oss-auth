@@ -1,5 +1,7 @@
 Avgeek OSS Auth
 Copyright Avgeek, Inc.
 
-Built with Zod. The PostgreSQL adapters work with node-postgres and
-Postgres.js. Third-party dependencies retain their own licenses.
+Built with Zod, openid-client and jose. The Hono integration works with
+Hono, the PostgreSQL adapters with node-postgres and Postgres.js, and the
+mock provider for tests is built on oidc-provider. Third-party
+dependencies retain their own licenses.

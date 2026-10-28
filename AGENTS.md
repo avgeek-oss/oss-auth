@@ -17,6 +17,7 @@ Never import app code or add app-specific behaviour here. App-specific data ente
 ## Invariants
 
 - People are keyed by `(iss, sub)`. Email is an attribute; never match or link on it.
+- Never trust `returnTo`, `state`, `iss` or a logout token without the checks in `oidc/`. A refused sign-in returns an outcome, not an exception, so its audit event commits.
 - Store only HMAC-SHA256 hashes of tokens and secrets, under a key from `deriveKey`. Never log a token, a secret or a configuration object's secret fields.
 - `KEY_LABELS`, `KEY_DERIVATION_SALT`, the API key format and `migrationChecksum` are stored-data formats. Never change or reuse one; add new labels and versions instead. The known-answer tests pin them.
 - Never edit a migration that has shipped. Add a new numbered file. Every SQL function pins `search_path` and reaches tables through `TG_TABLE_SCHEMA`, because the schema name is configurable.
@@ -27,11 +28,11 @@ Never import app code or add app-specific behaviour here. App-specific data ente
 - Strict TypeScript with `noUncheckedIndexedAccess`. Use `.js` extensions on relative imports and type-only imports for types. The packages ship ESM.
 - Every exported function and type has TSDoc. Errors are `AuthError` subclasses with a stable `code`; messages say what happened and how to fix it, and never contain secret values.
 - Runtime dependencies are limited to `zod`. Database drivers are optional peers, described structurally so their types are not needed.
-- Every behaviour change comes with a test. SQL behaviour is tested against a real Postgres through both adapters.
+- Every behaviour change comes with a test. SQL behaviour is tested against a real Postgres through both adapters. Sign-in behaviour is tested end to end with the mock provider and the cookie-jar browser in `@avgeek-oss/auth-core/testing`; add an attack test with every new check.
 
 ## Verify
 
-Run `pnpm verify` before every commit. Set `AUTH_TEST_DATABASE_URL` to a disposable database to include the Postgres suites.
+Run `pnpm verify` before every commit. Set `AUTH_TEST_DATABASE_URL` to a disposable database to include the Postgres suites. `DATABASE_URL=… pnpm dev:example` runs the reference app against the mock provider.
 
 ## Release
 
