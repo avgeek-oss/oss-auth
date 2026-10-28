@@ -35,6 +35,16 @@
       "source": "./src/postgres/index.ts",
       "types": "./dist/postgres/index.d.ts",
       "import": "./dist/postgres/index.js"
+    },
+    "./oidc": {
+      "source": "./src/oidc/index.ts",
+      "types": "./dist/oidc/index.d.ts",
+      "import": "./dist/oidc/index.js"
+    },
+    "./sessions": {
+      "source": "./src/sessions/index.ts",
+      "types": "./dist/sessions/index.d.ts",
+      "import": "./dist/sessions/index.js"
     }
   },
   "publishConfig": {
@@ -46,6 +56,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "jose": "6.2.13",
+    "openid-client": "6.8.8",
     "zod": "^4.6.7"
   },
   "peerDependencies": {
