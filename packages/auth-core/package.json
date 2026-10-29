@@ -1,6 +1,6 @@
 {
   "name": "@avgeek-oss/auth-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Server-side auth for Avgeek OSS apps: configuration, OIDC sign-in, sessions, the Hono integration, roles and the Postgres schema.",
   "type": "module",
   "license": "Apache-2.0",

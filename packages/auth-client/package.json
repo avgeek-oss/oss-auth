@@ -1,6 +1,6 @@
 {
   "name": "@avgeek-oss/auth-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browser client for the Avgeek OSS auth API: session, sign-in and step-up URLs, API keys, connected apps and MCP consent, with React hooks.",
   "type": "module",
   "license": "Apache-2.0",
