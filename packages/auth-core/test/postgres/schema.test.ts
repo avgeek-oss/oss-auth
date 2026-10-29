@@ -1,7 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deriveKey, generateToken, hashToken } from "../../src/index.js";
-import { migrate, quoteIdent, type Sql } from "../../src/postgres/index.js";
+import {
+  loadMigrations,
+  migrate,
+  quoteIdent,
+  type Sql,
+} from "../../src/postgres/index.js";
 import { adapters, databaseUrl, dropSchemas, uniqueSchema } from "./support.js";
 
 const ISS = "https://auth.example.com/application/o/posted/";
@@ -686,6 +691,7 @@ describe.skipIf(!databaseUrl).each(adapters)(
           "sessions_expires_at_idx",
           "sessions_pkey",
           "sessions_provider_sid_idx",
+          "sessions_public_id_key",
           "sessions_user_id_revoked_at_idx",
         ]);
       });
@@ -831,6 +837,146 @@ describe.skipIf(!databaseUrl).each(adapters)(
             idHash,
           ]),
         ).toEqual([]);
+      });
+    });
+
+    describe("0009", () => {
+      const session = async (idHash: string) =>
+        (
+          await sql.query<{
+            publicId: string;
+            seenIsCreated: boolean;
+            browser: string | null;
+          }>(
+            `SELECT public_id::text AS "publicId",
+                    last_seen_at = created_at AS "seenIsCreated", browser
+             FROM ${t("sessions")} WHERE id_hash = $1`,
+            [idHash],
+          )
+        )[0];
+
+      it("gives every session a public id and a last sighting, and never changes the id", async () => {
+        const userId = await createUser();
+        const a = await createSession(userId);
+        const b = await createSession(userId);
+        const first = await session(a);
+        expect(first?.publicId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        expect(first?.publicId).not.toBe((await session(b))?.publicId);
+        // Inserted without one, a session was last seen when created.
+        expect(first?.seenIsCreated).toBe(true);
+        await fails(
+          `UPDATE ${t("sessions")} SET public_id = gen_random_uuid() WHERE id_hash = $1`,
+          [a],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET public_id = $2::uuid WHERE id_hash = $1`,
+          [b, first?.publicId],
+        );
+        await sql.query(
+          `UPDATE ${t("sessions")} SET last_seen_at = now() + interval '1 minute' WHERE id_hash = $1`,
+          [a],
+        );
+        await fails(
+          `UPDATE ${t("sessions")} SET last_seen_at = created_at - interval '1 second' WHERE id_hash = $1`,
+          [a],
+        );
+      });
+
+      it("keeps the user agent summary short and never empty", async () => {
+        const userId = await createUser();
+        const idHash = await createSession(userId);
+        await sql.query(
+          `UPDATE ${t("sessions")} SET browser = 'Firefox', os = 'macOS' WHERE id_hash = $1`,
+          [idHash],
+        );
+        expect((await session(idHash))?.browser).toBe("Firefox");
+        for (const value of ["", "x".repeat(33)]) {
+          await fails(
+            `UPDATE ${t("sessions")} SET browser = $2 WHERE id_hash = $1`,
+            [idHash, value],
+          );
+          await fails(
+            `UPDATE ${t("sessions")} SET os = $2 WHERE id_hash = $1`,
+            [idHash, value],
+          );
+        }
+      });
+
+      it("records a sign-in without moving updated_at, which other changes still move", async () => {
+        const id = await createUser({
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          updated_at: new Date("2026-01-01T00:00:00Z"),
+        });
+        const read = async () =>
+          (
+            await sql.query<{ updatedAt: Date; lastSignInAt: Date | null }>(
+              `SELECT updated_at AS "updatedAt", last_sign_in_at AS "lastSignInAt"
+               FROM ${t("users")} WHERE id = $1`,
+              [id],
+            )
+          )[0];
+        expect((await read())?.lastSignInAt).toBeNull();
+        await sql.query(
+          `UPDATE ${t("users")} SET last_sign_in_at = now() WHERE id = $1`,
+          [id],
+        );
+        const signedIn = await read();
+        expect(signedIn?.lastSignInAt).toBeInstanceOf(Date);
+        expect(signedIn?.updatedAt.toISOString()).toBe(
+          "2026-01-01T00:00:00.000Z",
+        );
+        await sql.query(
+          `UPDATE ${t("users")} SET last_sign_in_at = now(), email = 'new@example.com' WHERE id = $1`,
+          [id],
+        );
+        expect((await read())?.updatedAt.getTime()).toBeGreaterThan(
+          new Date("2026-01-01T00:00:00Z").getTime(),
+        );
+      });
+
+      it("fills in sessions that existed before it", async () => {
+        const all = await loadMigrations();
+        const before = all.filter((m) => m.name < "0009");
+        const older = uniqueSchema("before-0009");
+        const o = (table: string) => `${quoteIdent(older)}.${table}`;
+        try {
+          await migrate(sql, { schema: older, migrations: before });
+          const [user] = await sql.query<{ id: string }>(
+            `INSERT INTO ${o("users")} (iss, sub, role) VALUES ($1, 'old', 'member') RETURNING id`,
+            [ISS],
+          );
+          for (let i = 0; i < 2; i++)
+            await sql.query(
+              `INSERT INTO ${o("sessions")}
+               (id_hash, user_id, created_at, authenticated_at, expires_at, idle_expires_at)
+               VALUES ($1, $2, now() - interval '1 hour', now() - interval '1 hour',
+                       now() + interval '11 hours', now() + interval '1 hour')`,
+              [hashToken(sessionKey, generateToken()), user?.id],
+            );
+          expect((await migrate(sql, { schema: older })).applied).toEqual([
+            "0009_sessions_directory.sql",
+          ]);
+          const rows = await sql.query<{ publicId: string; seen: boolean }>(
+            `SELECT public_id::text AS "publicId", last_seen_at = created_at AS "seen"
+             FROM ${o("sessions")}`,
+          );
+          expect(rows).toHaveLength(2);
+          expect(new Set(rows.map((r) => r.publicId)).size).toBe(2);
+          expect(rows.every((r) => r.seen)).toBe(true);
+        } finally {
+          await dropSchemas(sql, [older]);
+        }
+      });
+
+      it("indexes users for the directory", async () => {
+        const [row] = await sql.query<{ names: string[] }>(
+          `SELECT array_agg(indexname::text ORDER BY indexname) AS "names" FROM pg_indexes
+         WHERE schemaname = $1 AND tablename = 'users'`,
+          [schema],
+        );
+        expect(row?.names).toContain("users_created_at_id_idx");
       });
     });
   },

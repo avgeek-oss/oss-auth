@@ -77,6 +77,9 @@ During a server render, `useSession()` reports `loading`, and nothing touches `w
 | `signInUrl(returnTo?)`                            | none                                       | `/auth/sign-in?returnTo=…`                                                |
 | `stepUpUrl(returnTo?)`                            | none                                       | `/auth/step-up?returnTo=…`                                                |
 | `signOut()`                                       | `POST /auth/sign-out`                      | the identity provider's logout URL to visit next, or `null`               |
+| `sessions.list()`                                 | `GET /auth/sessions`                       | `ActiveSession[]`, newest first, the page's own with `current: true`      |
+| `sessions.revoke(id)`                             | `DELETE /auth/sessions/:id`                | `{ current, endSessionUrl }`; `current` means this page is signed out     |
+| `sessions.signOutEverywhere()`                    | `POST /auth/sessions/sign-out-everywhere`  | `{ revoked, endSessionUrl }`; this page is signed out too                 |
 | `apiKeys.list()`                                  | `GET /auth/api-keys`                       | `ApiKey[]`                                                                |
 | `apiKeys.create({ name, ceiling, … })`            | `POST /auth/api-keys`                      | `{ key, apiKey }`: `key` is the secret, shown this once                   |
 | `apiKeys.rotate(id, { graceSeconds })`            | `POST /auth/api-keys/:id/rotate`           | `{ key, apiKey }`; the old key works for `graceSeconds`                   |
@@ -87,6 +90,11 @@ During a server render, `useSession()` reports `loading`, and nothing touches `w
 | `consent.decide(id, { approve, ceiling })`        | `POST /oauth/consent/:id`                  | `{ redirectUri }`: navigate there next                                    |
 | `admin.apiKeys.list(userId)`, `.revoke(id)`       | `GET /auth/api-keys?user=`, `DELETE`       | another person's keys (admins only)                                       |
 | `admin.connectedApps.list(userId)`, `.revoke(id)` | `GET /auth/connected-apps?user=`, `DELETE` | another person's connected apps (admins only)                             |
+| `admin.users.list({ cursor, q, status, limit })`  | `GET /auth/admin/users`                    | `{ users, nextCursor }`: one page of the directory (admins only)          |
+
+After `sessions.revoke` of the page's own session (`current: true`) or `sessions.signOutEverywhere()`, the page is signed out exactly as after `signOut()`: navigate to `endSessionUrl` when it is set, or refresh the session. `ActiveSession` has `id` (a public id, never the token), `createdAt`, `lastSeenAt`, `idleExpiresAt`, `expiresAt`, `authenticatedAt`, `browser` and `os` (such as `Firefox` and `macOS`, or `null`) and `current`; the app composes them into words, so they translate.
+
+`admin.users.list` pages the directory newest first: pass the last page's `nextCursor` as `cursor` until it is `null`. `q` matches part of a name or email, ignoring case; `status` is `active`, `suspended` (no role), `deactivated` or `deleted`; `limit` is 1 to 100, default 50. Each `DirectoryUser` has `id`, `displayName`, `email`, `role` (`null` when suspended), `roleSource` (`claims`, `scim` or `app`), `status`, `createdAt`, `lastSignInAt`, `deactivatedAt` and `deletedAt`. The directory is read-only: roles and access are managed at the identity provider.
 
 Methods that return a URL never navigate. `returnTo` is a path on the web origin, such as `/settings?tab=keys`; auth-core refuses anything else.
 

@@ -2,6 +2,15 @@
 
 All packages release together with the same version.
 
+## Unreleased
+
+- `@avgeek-oss/auth-core/hono`: the signed-in person's own sessions. `GET /auth/sessions` lists them newest first with a public `id`, `createdAt`, `lastSeenAt`, `idleExpiresAt`, `expiresAt`, `authenticatedAt`, `browser`, `os` and `current`; `DELETE /auth/sessions/:id` ends one (404 for anyone else's, like an unknown id), and ending the current one signs out; `POST /auth/sessions/sign-out-everywhere` ends all of them, this one included. Session-only, CSRF-checked, and limited by the new `sessions.write` policy (30 a minute per user).
+- `@avgeek-oss/auth-core/hono`: the people directory for admins, `GET /auth/admin/users`: every user with role, role source (`claims`, `scim` or `app`), status (`active`, `suspended`, `deactivated` or `deleted`), creation and last sign-in, newest first, paged by an opaque cursor (`limit` up to 100, default 50), with `q` on name and email and a `status` filter. Read-only.
+- `@avgeek-oss/auth-core/sessions`: `SessionRecord` gains `publicId`, `lastSeenAt`, `browser` and `os`; `create` takes the sign-in's `userAgent` and stores only its browser family and operating system; `revokeById(publicId, userId)`; `summarizeUserAgent`. Lookups record `lastSeenAt` at most once a minute.
+- `@avgeek-oss/auth-core/postgres`: the `0009_sessions_directory` migration: `sessions.public_id`, `last_seen_at`, `browser` and `os`, and `users.last_sign_in_at`, set at sign-in without moving `updated_at`.
+- `@avgeek-oss/auth-client`: `sessions.list()`, `sessions.revoke(id)` and `sessions.signOutEverywhere()`, and `admin.users.list({ cursor, q, status, limit })`, with the types `ActiveSession`, `RevokeSessionResult`, `SignOutEverywhereResult`, `SessionsApi`, `DirectoryUser`, `ListUsersInput`, `UserPage`, `UserStatus` and `RoleSource`.
+- The reference app shows the person's sessions, with sign-out for each and everywhere.
+
 ## 0.1.0 (2026-10-29)
 
 - `@avgeek-oss/auth-core`: typed configuration from `<APP>_*` environment variables, HKDF-SHA256 key derivation with a fixed label registry, 256-bit tokens stored as HMAC-SHA256, the `<prefix>_<id>_<secret>_<checksum>` API key format, the `viewer`/`member`/`admin` roles with claim mapping, actors and typed errors.

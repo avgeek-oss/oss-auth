@@ -51,6 +51,8 @@ export const DEFAULT_RATE_LIMITS = {
   "oauth.consent": { limit: 30, periodSeconds: 60 },
   /** API key creation and rotation, per user. */
   "api-keys.write": { limit: 30, periodSeconds: 60 },
+  /** Signing out one session or every session, per user. */
+  "sessions.write": { limit: 30, periodSeconds: 60 },
   /** Invalid API keys or OAuth bearer tokens presented, per IP. */
   "bearer.invalid": { limit: 60, periodSeconds: 60 },
   /** SCIM requests, per bearer token. */

@@ -133,6 +133,100 @@ describe("requests", () => {
     );
   });
 
+  it("lists sessions, signs out one or all, and pages the directory", async () => {
+    const listed = [{ id: "s1", current: true }];
+    const page = { users: [{ id: "u1" }], nextCursor: "c2" };
+    const { client, seen } = setup({
+      "GET /auth/sessions": json({ sessions: listed }),
+      "DELETE /auth/sessions/s%2F1": json({
+        current: false,
+        endSessionUrl: null,
+      }),
+      "DELETE /auth/sessions/s1": json({
+        current: true,
+        endSessionUrl: "https://idp/logout",
+      }),
+      "POST /auth/sessions/sign-out-everywhere": json({
+        revoked: 3,
+        endSessionUrl: "https://idp/logout",
+      }),
+      "GET /auth/admin/users": json(page),
+      "GET /auth/admin/users?q=ada+l%26b&status=suspended&cursor=c%2B1&limit=25":
+        json({ users: [], nextCursor: null }),
+    });
+    expect(await client.sessions.list()).toEqual(listed);
+    expect(await client.sessions.revoke("s/1")).toEqual({
+      current: false,
+      endSessionUrl: null,
+    });
+    expect(await client.sessions.revoke("s1")).toEqual({
+      current: true,
+      endSessionUrl: "https://idp/logout",
+    });
+    expect(await client.sessions.signOutEverywhere()).toEqual({
+      revoked: 3,
+      endSessionUrl: "https://idp/logout",
+    });
+    expect(await client.admin.users.list()).toEqual(page);
+    // Empty and null parameters are left out.
+    expect(
+      await client.admin.users.list({ q: "", status: null, cursor: null }),
+    ).toEqual(page);
+    expect(
+      await client.admin.users.list({
+        cursor: "c+1",
+        q: "ada l&b",
+        status: "suspended",
+        limit: 25,
+      }),
+    ).toEqual({ users: [], nextCursor: null });
+    expect(seen.map((r) => [r.method, r.url])).toEqual([
+      ["GET", `${API}/auth/sessions`],
+      ["DELETE", `${API}/auth/sessions/s%2F1`],
+      ["DELETE", `${API}/auth/sessions/s1`],
+      ["POST", `${API}/auth/sessions/sign-out-everywhere`],
+      ["GET", `${API}/auth/admin/users`],
+      ["GET", `${API}/auth/admin/users`],
+      [
+        "GET",
+        `${API}/auth/admin/users?q=ada+l%26b&status=suspended&cursor=c%2B1&limit=25`,
+      ],
+    ]);
+    for (const request of seen) expect(request.body).toBeUndefined();
+    expect(seen[0]?.headers).toEqual({ accept: "application/json" });
+    for (const request of seen.slice(1, 4))
+      expect(request.headers["x-requested-with"]).toBe("fetch");
+  });
+
+  it("passes session and directory refusals through as typed errors", async () => {
+    const { client } = setup({
+      "DELETE /auth/sessions/gone": apiError("not_found", 404),
+      "POST /auth/sessions/sign-out-everywhere": apiError(
+        "rate_limited",
+        429,
+        {},
+        { "retry-after": "7" },
+      ),
+      "GET /auth/admin/users": apiError("forbidden", 403),
+      "GET /auth/admin/users?cursor=bad": apiError("invalid_request", 400),
+    });
+    expect(await failure(client.sessions.revoke("gone"))).toMatchObject({
+      code: "not_found",
+      status: 404,
+    });
+    expect(await failure(client.sessions.signOutEverywhere())).toMatchObject({
+      code: "rate_limited",
+      retryAfterSeconds: 7,
+    });
+    expect(await failure(client.admin.users.list())).toMatchObject({
+      code: "forbidden",
+      status: 403,
+    });
+    expect(
+      await failure(client.admin.users.list({ cursor: "bad" })),
+    ).toMatchObject({ code: "invalid_request" });
+  });
+
   it("answers a signed-out session with null, and throws other session failures", async () => {
     const { client, answer } = setup({
       "GET /auth/session": apiError("unauthenticated", 401),

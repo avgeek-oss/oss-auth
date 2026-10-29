@@ -18,6 +18,7 @@ export {
 export {
   ROLES,
   roleAtLeast,
+  type ActiveSession,
   type AdminApi,
   type ApiKey,
   type ApiKeysApi,
@@ -29,10 +30,18 @@ export {
   type ConsentDecisionInput,
   type ConsentRequest,
   type CreateApiKeyInput,
+  type DirectoryUser,
   type IssuedApiKey,
+  type ListUsersInput,
+  type RevokeSessionResult,
   type Role,
+  type RoleSource,
+  type SessionsApi,
   type SessionUser,
+  type SignOutEverywhereResult,
   type SignOutResult,
+  type UserPage,
+  type UserStatus,
 } from "./types.js";
 export {
   addReturnTo,
