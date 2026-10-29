@@ -2,7 +2,7 @@
 
 All packages release together with the same version.
 
-## Unreleased
+## 0.2.0 (2026-10-29)
 
 - `@avgeek-oss/auth-core/hono`: the signed-in person's own sessions. `GET /auth/sessions` lists them newest first with a public `id`, `createdAt`, `lastSeenAt`, `idleExpiresAt`, `expiresAt`, `authenticatedAt`, `browser`, `os` and `current`; `DELETE /auth/sessions/:id` ends one (404 for anyone else's, like an unknown id), and ending the current one signs out; `POST /auth/sessions/sign-out-everywhere` ends all of them, this one included. Session-only, CSRF-checked, and limited by the new `sessions.write` policy (30 a minute per user).
 - `@avgeek-oss/auth-core/hono`: the people directory for admins, `GET /auth/admin/users`: every user with role, role source (`claims`, `scim` or `app`), status (`active`, `suspended`, `deactivated` or `deleted`), creation and last sign-in, newest first, paged by an opaque cursor (`limit` up to 100, default 50), with `q` on name and email and a `status` filter. Read-only.
