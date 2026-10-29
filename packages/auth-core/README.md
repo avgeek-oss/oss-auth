@@ -10,7 +10,7 @@ The server half of Avgeek OSS auth: sign-in through the organisation's OpenID pr
 | `@avgeek-oss/auth-core/api-keys`    | `createApiKeys`: personal API keys with a role ceiling. Issue, list, rotate, revoke, verify.                                               |
 | `@avgeek-oss/auth-core/mcp`         | `createMcpAuth`: the OAuth 2.1 authorization server for MCP clients and `requireMcpToken` for its resources.                               |
 | `@avgeek-oss/auth-core/rate-limits` | `createRateLimiter`, the default policies, and client IP resolution behind trusted proxies.                                                |
-| `@avgeek-oss/auth-core/sessions`    | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation.                                                      |
+| `@avgeek-oss/auth-core/sessions`    | `createSessions`: create, look up, revoke, list, step-up and back-channel revocation, and `summarizeUserAgent`.                            |
 | `@avgeek-oss/auth-core/scim`        | `createScim`: the SCIM 2.0 server for Users and Groups, as a Hono sub-app.                                                                 |
 | `@avgeek-oss/auth-core/hono`        | `createAuth`: the `/auth` routes and middleware for a Hono API.                                                                            |
 | `@avgeek-oss/auth-core/testing`     | `startMockProvider` and `createBrowser`, for flow tests and local development.                                                             |
@@ -48,18 +48,22 @@ app.delete(
 
 The routes, under `/auth` on the API origin:
 
-| Route                       | What it does                                                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `GET /sign-in?returnTo=`    | Redirects to the provider. `returnTo` must be a path on the web origin.                                          |
-| `GET /callback`             | Finishes sign-in or step-up and redirects to `returnTo`; on failure, to the web origin with `auth_error=<code>`. |
-| `POST /sign-out`            | Ends the session and returns `{ endSessionUrl }`, the provider's logout URL or `null`.                           |
-| `GET /session`              | The current user, role and session, or 401.                                                                      |
-| `GET /step-up?returnTo=`    | Re-authenticates at the provider with `prompt=login`.                                                            |
-| `POST /backchannel-logout`  | Receives the provider's logout tokens.                                                                           |
-| `GET /api-keys?user=`       | The caller's usable keys; an admin may name another user.                                                        |
-| `POST /api-keys`            | Creates a key from `{ name, ceiling, workspace?, expiresInSeconds? }` and returns it once.                       |
-| `POST /api-keys/:id/rotate` | Replaces one of the caller's keys; `{ graceSeconds }` keeps the old one working that long.                       |
-| `DELETE /api-keys/:id`      | Revokes one of the caller's keys, or anyone's for an admin.                                                      |
+| Route                                | What it does                                                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `GET /sign-in?returnTo=`             | Redirects to the provider. `returnTo` must be a path on the web origin.                                          |
+| `GET /callback`                      | Finishes sign-in or step-up and redirects to `returnTo`; on failure, to the web origin with `auth_error=<code>`. |
+| `POST /sign-out`                     | Ends the session and returns `{ endSessionUrl }`, the provider's logout URL or `null`.                           |
+| `GET /session`                       | The current user, role and session, or 401.                                                                      |
+| `GET /step-up?returnTo=`             | Re-authenticates at the provider with `prompt=login`.                                                            |
+| `POST /backchannel-logout`           | Receives the provider's logout tokens.                                                                           |
+| `GET /api-keys?user=`                | The caller's usable keys; an admin may name another user.                                                        |
+| `POST /api-keys`                     | Creates a key from `{ name, ceiling, workspace?, expiresInSeconds? }` and returns it once.                       |
+| `POST /api-keys/:id/rotate`          | Replaces one of the caller's keys; `{ graceSeconds }` keeps the old one working that long.                       |
+| `DELETE /api-keys/:id`               | Revokes one of the caller's keys, or anyone's for an admin.                                                      |
+| `GET /sessions`                      | The caller's live sessions, newest first; the one making the request has `current: true`.                        |
+| `DELETE /sessions/:id`               | Ends one of the caller's sessions and returns `{ current, endSessionUrl }`; the current one is a sign-out.       |
+| `POST /sessions/sign-out-everywhere` | Ends every session of the caller, this one included, and returns `{ revoked, endSessionUrl }`.                   |
+| `GET /admin/users`                   | Admins only: the people directory, a page at a time (see below).                                                 |
 
 Errors are JSON: `{ "error": { "code": "step_up_required", "message": "…", "stepUpUrl": "…" } }`. The browser sends `X-Requested-With` on every state-changing request; `trustedOrigin` refuses it otherwise, and refuses any `Origin` but the web origin.
 
@@ -134,6 +138,26 @@ const auth = createAuth({
 
 `createApiKeys({ config, sql })` from `@avgeek-oss/auth-core/api-keys` offers the same operations without Hono, and `auth.apiKeys` is the instance `createAuth` uses.
 
+## Sessions and the people directory
+
+People see and end their own browser sessions; admins see everyone the app knows.
+
+- **`GET /auth/sessions`** lists the caller's live sessions, newest first. Each has `id`, `createdAt`, `lastSeenAt` (the last request, recorded at most once a minute), `idleExpiresAt`, `expiresAt`, `authenticatedAt`, `browser`, `os` and `current`. `id` is a random public id (`sessions.public_id`, from `0009_sessions_directory`), never the token or its hash, and it survives a secret rotation.
+- **What is stored.** At sign-in, the `User-Agent` header is reduced to a browser family and an operating system without versions, such as `Firefox` and `macOS` (`summarizeUserAgent` in `/sessions`), and only those two words are kept. The header itself and the IP address are not stored.
+- **`DELETE /auth/sessions/:id`** ends one of the caller's sessions. Another person's session, an unknown or malformed id and one that already ended all answer 404 `not_found` alike, so nothing reveals that an id exists. Ending the caller's own session is a sign-out: the cookie is cleared, and `endSessionUrl` is the provider's logout URL.
+- **`POST /auth/sessions/sign-out-everywhere`** ends every session of the caller with `Sessions.revokeAll`, this one included, clears the cookie and returns `{ revoked, endSessionUrl }`. API keys and connected apps are not touched. It needs no recent sign-in: it only ever takes access away, and an attacker holding a stolen cookie gains nothing from it, while a step-up would stand between the person and locking that attacker out.
+- **Who may call them.** A signed-in session only: an API key gets 403 `forbidden`, since it has no session. The two writes need the web origin and the CSRF header, like every state-changing route, and share the `sessions.write` limit per user.
+- **`GET /auth/admin/users`** is behind `requireRole("admin")`, so an admin session or an `admin` key. It answers `{ users, nextCursor }`, newest first. Each user has `id`, `displayName`, `email`, `role` (`null` while suspended), `roleSource` (`claims`, `scim` or `app`; `null` until set), `status`, `createdAt`, `lastSignInAt`, `deactivatedAt` and `deletedAt`. `status` is, most final first:
+  - `deleted`: a SCIM tombstone;
+  - `deactivated`: SCIM `active: false`;
+  - `suspended`: no role, or with `<APP>_ROLE_SOURCE=scim` a role that did not come from SCIM, so sign-in, sessions and keys are refused as they are at lookup;
+  - `active`.
+- **Paging and search.** `limit` is 1 to 100 (default 50), and `cursor` is the previous page's `nextCursor`, opaque and exact to the microsecond. `q` matches part of the name or email, ignoring case, with `%` and `_` taken literally, and `status` keeps one state. A bad parameter answers 400 `invalid_request`.
+- **Last sign-in.** `users.last_sign_in_at` is set by the callback when a sign-in creates a session; step-up does not count. Recording it does not move `updated_at`, which SCIM reports as `meta.lastModified`. People provisioned by SCIM who never signed in, and sign-ins before `0009`, show `null`.
+- **Read-only.** There are no write routes. Roles and access are managed at the identity provider, through SCIM and the role claim.
+
+`auth.sessions.list(userId)`, `revokeById(publicId, userId)` and `revokeAll(userId)` offer the session operations without Hono.
+
 ## MCP authorization server
 
 Each app is its own OAuth 2.1 authorization server for MCP clients, following the MCP authorization specification (2026-07-28). People still sign in through the organisation's provider; the app then asks them to approve the client on its consent page and issues its own short-lived, audience-bound tokens. The scopes are the role names, and a grant acts with the lower of the role it was approved with and the person's current role, exactly like an API key.
@@ -200,6 +224,7 @@ POSTED_RATE_LIMITS='{"oauth.token.ip":{"limit":300,"periodSeconds":60},"scim":{"
 | `oauth.register`          | legacy dynamic client registration, when on                        | 5 an hour     | IP               |
 | `oauth.consent`           | consent decisions (`POST /oauth/consent/:id`)                      | 30 a minute   | user             |
 | `api-keys.write`          | API key creation and rotation                                      | 30 a minute   | user             |
+| `sessions.write`          | signing out one session or every session                           | 30 a minute   | user             |
 | `bearer.invalid`          | invalid API keys, OAuth access tokens and SCIM tokens only         | 60 a minute   | IP               |
 | `scim`                    | every SCIM request                                                 | 3000 a minute | SCIM token       |
 

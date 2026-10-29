@@ -141,6 +141,111 @@ export interface SignOutResult {
   readonly endSessionUrl: string | null;
 }
 
+/**
+ * One of the signed-in person's browser sessions: `GET <basePath>/sessions`.
+ * `id` is a public id, never the session's token.
+ */
+export interface ActiveSession {
+  readonly id: string;
+  readonly createdAt: string;
+  /** The last request in this session, to within a minute. */
+  readonly lastSeenAt: string;
+  /** When it ends unless used before then. */
+  readonly idleExpiresAt: string;
+  /** When it ends however much it is used. */
+  readonly expiresAt: string;
+  /** When the person last authenticated at the provider in it. */
+  readonly authenticatedAt: string;
+  /** The browser family it signed in with, such as `Firefox`, or `null`. */
+  readonly browser: string | null;
+  /** The operating system it signed in on, such as `macOS`, or `null`. */
+  readonly os: string | null;
+  /** True for the session of the page asking. */
+  readonly current: boolean;
+}
+
+/** The API's answer to signing out one session. */
+export interface RevokeSessionResult extends SignOutResult {
+  /**
+   * True when it was the page's own session: the page is signed out, as
+   * after `signOut`, and `endSessionUrl` is the provider's logout URL.
+   * Otherwise `endSessionUrl` is `null`.
+   */
+  readonly current: boolean;
+}
+
+/** The API's answer to signing out everywhere. */
+export interface SignOutEverywhereResult extends SignOutResult {
+  /** How many sessions ended, the page's own included. */
+  readonly revoked: number;
+}
+
+/** The signed-in person's browser sessions. */
+export interface SessionsApi {
+  /** Their live sessions, newest first, with the page's own marked `current`. */
+  readonly list: () => Promise<ActiveSession[]>;
+  /**
+   * Signs out one of their sessions. Someone else's, or one that already
+   * ended, rejects with `not_found`.
+   */
+  readonly revoke: (id: string) => Promise<RevokeSessionResult>;
+  /** Signs out every one of their sessions, this page's included. */
+  readonly signOutEverywhere: () => Promise<SignOutEverywhereResult>;
+}
+
+/**
+ * Where a person stands in the app: `active`; `suspended` (no role, so
+ * sign-in and their credentials are refused until the provider gives one
+ * back); `deactivated` (inactive at the provider); or `deleted` (removed by
+ * the provider).
+ */
+export type UserStatus = "active" | "suspended" | "deactivated" | "deleted";
+
+/**
+ * Where a person's role came from: the role claim at sign-in (`claims`),
+ * SCIM group membership (`scim`), or the app itself (`app`).
+ */
+export type RoleSource = "claims" | "scim" | "app";
+
+/** A person in the app's directory: `GET <basePath>/admin/users`. */
+export interface DirectoryUser {
+  /** The app's user id (a UUID). */
+  readonly id: string;
+  readonly displayName: string | null;
+  /** An attribute, never an identifier. */
+  readonly email: string | null;
+  /** `null` while the person has no access. */
+  readonly role: Role | null;
+  /** `null` until something sets the role. */
+  readonly roleSource: RoleSource | null;
+  readonly status: UserStatus;
+  readonly createdAt: string;
+  /** Their last sign-in, or `null` if they never signed in. */
+  readonly lastSignInAt: string | null;
+  readonly deactivatedAt: string | null;
+  readonly deletedAt: string | null;
+}
+
+/** What {@link AdminApi.users} `list` takes. Every field is optional. */
+export interface ListUsersInput {
+  /** The previous page's `nextCursor`; leave out for the first page. */
+  readonly cursor?: string | null;
+  /** Part of a name or email, ignoring case. */
+  readonly q?: string | null;
+  /** Only people in this state. */
+  readonly status?: UserStatus | null;
+  /** People per page, 1 to 100. Default 50. */
+  readonly limit?: number;
+}
+
+/** A page of the directory. */
+export interface UserPage {
+  /** Newest first. */
+  readonly users: DirectoryUser[];
+  /** Pass as `cursor` for the next page; `null` on the last one. */
+  readonly nextCursor: string | null;
+}
+
 /** API key management for the signed-in person. */
 export interface ApiKeysApi {
   /** Their keys, newest first. */
@@ -177,7 +282,11 @@ export interface ConsentApi {
   ) => Promise<ConsentDecision>;
 }
 
-/** Admin-only views of other people's credentials. */
+/**
+ * Admin-only views of other people's credentials, and the directory of
+ * everyone the app knows. Read-only for people: roles and access are
+ * managed at the identity provider.
+ */
 export interface AdminApi {
   readonly apiKeys: {
     readonly list: (userId: string) => Promise<ApiKey[]>;
@@ -186,5 +295,9 @@ export interface AdminApi {
   readonly connectedApps: {
     readonly list: (userId: string) => Promise<ConnectedApp[]>;
     readonly revoke: (id: string) => Promise<void>;
+  };
+  readonly users: {
+    /** One page of the directory, newest first. */
+    readonly list: (input?: ListUsersInput) => Promise<UserPage>;
   };
 }

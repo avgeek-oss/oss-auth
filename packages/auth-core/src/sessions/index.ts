@@ -10,11 +10,19 @@ import {
   hashTokens,
   isWellFormedToken,
 } from "../tokens.js";
+import { summarizeUserAgent } from "./user-agent.js";
+
+export { summarizeUserAgent, type UserAgentSummary } from "./user-agent.js";
 
 /** A stored session. The token itself is never stored or returned again. */
 export interface SessionRecord {
   /** HMAC-SHA256 of the token: the session's id in the database. */
   readonly idHash: string;
+  /**
+   * The session's public id (a UUID), for showing and revoking it. Never
+   * the token or its hash, and unchanged when a rotation re-hashes it.
+   */
+  readonly publicId: string;
   readonly userId: string;
   readonly createdAt: Date;
   /** When the person last authenticated at the provider. */
@@ -23,7 +31,13 @@ export interface SessionRecord {
   readonly amr: readonly string[];
   readonly expiresAt: Date;
   readonly idleExpiresAt: Date;
+  /** The last lookup, recorded at most once a minute. */
+  readonly lastSeenAt: Date;
   readonly providerSid: string | null;
+  /** The browser family at sign-in, such as `Firefox`, or `null`. */
+  readonly browser: string | null;
+  /** The operating system at sign-in, such as `macOS`, or `null`. */
+  readonly os: string | null;
 }
 
 /** A live session with its actor, from {@link Sessions.lookup}. */
@@ -52,6 +66,8 @@ export interface Sessions<Ext extends object> {
    * Creates a session for an active user and returns its token, which goes
    * only into the cookie. Every sign-in gets a new token, so a token planted
    * before sign-in never becomes valid. Pass the sign-in transaction as `db`.
+   * Of `userAgent`, only {@link summarizeUserAgent}'s browser and operating
+   * system are stored.
    */
   create(
     input: {
@@ -59,14 +75,17 @@ export interface Sessions<Ext extends object> {
       readonly authenticatedAt: Date;
       readonly amr: readonly string[];
       readonly providerSid: string | null;
+      /** The `User-Agent` header of the sign-in. */
+      readonly userAgent?: string | null;
     },
     db?: SqlQueryable,
   ): Promise<{ readonly token: string; readonly session: SessionRecord }>;
   /**
    * Finds the live session for `token`: not revoked, within both its
    * absolute and idle expiry, and belonging to an active user. Slides the
-   * idle expiry forward, at most once a minute and never past the absolute
-   * expiry. Returns `null` for anything else, including malformed tokens.
+   * idle expiry forward and records `lastSeenAt`, at most once a minute,
+   * never past the absolute expiry. Returns `null` for anything else,
+   * including malformed tokens.
    */
   lookup(token: string | undefined): Promise<SessionLookup<Ext> | null>;
   /**
@@ -81,6 +100,12 @@ export interface Sessions<Ext extends object> {
    * under. Returns whether a live session was revoked.
    */
   revokeToken(token: string | undefined): Promise<boolean>;
+  /**
+   * Revokes the live session with public id `publicId` if it belongs to
+   * `userId`, and returns whether it did. Another user's session, an
+   * expired or unknown id and a malformed one all answer `false` alike.
+   */
+  revokeById(publicId: string, userId: string): Promise<boolean>;
   /**
    * Revokes every live session of a user and returns how many. Pass a
    * transaction as `db` to make it part of a larger change.
@@ -111,10 +136,13 @@ export interface Sessions<Ext extends object> {
   ): Promise<number>;
 }
 
-const SESSION_COLUMNS = `s.id_hash AS "idHash", s.user_id AS "userId",
-  s.created_at AS "createdAt", s.authenticated_at AS "authenticatedAt", s.amr,
-  s.expires_at AS "expiresAt", s.idle_expires_at AS "idleExpiresAt",
-  s.provider_sid AS "providerSid"`;
+const SESSION_COLUMNS = `s.id_hash AS "idHash", s.public_id AS "publicId",
+  s.user_id AS "userId", s.created_at AS "createdAt",
+  s.authenticated_at AS "authenticatedAt", s.amr, s.expires_at AS "expiresAt",
+  s.idle_expires_at AS "idleExpiresAt", s.last_seen_at AS "lastSeenAt",
+  s.provider_sid AS "providerSid", s.browser, s.os`;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Creates the session service for one app. */
 export function createSessions<Ext extends object = Record<never, never>>(
@@ -173,13 +201,15 @@ export function createSessions<Ext extends object = Record<never, never>>(
     async create(input, db = sql) {
       const token = generateToken();
       const idHash = hashToken(key, token);
+      const agent = summarizeUserAgent(input.userAgent);
       const [session] = await db.query<SessionRecord>(
         `INSERT INTO ${sessions} AS s
            (id_hash, user_id, created_at, authenticated_at, amr, expires_at,
-            idle_expires_at, provider_sid)
+            idle_expires_at, last_seen_at, provider_sid, browser, os)
          VALUES ($2, $3, ${T}, LEAST($4::timestamptz, ${T}),
                  ARRAY(SELECT jsonb_array_elements_text($5::text::jsonb)),
-                 ${T} + make_interval(secs => $6), ${T} + make_interval(secs => $7), $8)
+                 ${T} + make_interval(secs => $6), ${T} + make_interval(secs => $7),
+                 ${T}, $8, $9, $10)
          RETURNING ${SESSION_COLUMNS}`,
         [
           now(),
@@ -190,6 +220,8 @@ export function createSessions<Ext extends object = Record<never, never>>(
           maxAge,
           Math.min(idle, maxAge),
           input.providerSid,
+          agent.browser,
+          agent.os,
         ],
       );
       if (session === undefined)
@@ -218,12 +250,20 @@ export function createSessions<Ext extends object = Record<never, never>>(
       );
       if (row === undefined) return null;
       if (row.idHash !== idHash) await rehash(row.idHash, idHash);
-      const [slid] = await sql.query<{ idleExpiresAt: Date }>(
+      // Near the absolute expiry the idle expiry stops moving, but the
+      // last sighting is still recorded once a minute.
+      const [slid] = await sql.query<{
+        idleExpiresAt: Date;
+        lastSeenAt: Date;
+      }>(
         `UPDATE ${sessions}
-         SET idle_expires_at = LEAST(${T} + make_interval(secs => $3), expires_at)
+         SET idle_expires_at = GREATEST(idle_expires_at,
+               LEAST(${T} + make_interval(secs => $3), expires_at)),
+             last_seen_at = GREATEST(last_seen_at, ${T})
          WHERE id_hash = $2 AND revoked_at IS NULL
-           AND idle_expires_at < LEAST(${T} + make_interval(secs => $3), expires_at) - interval '60 seconds'
-         RETURNING idle_expires_at AS "idleExpiresAt"`,
+           AND (idle_expires_at < LEAST(${T} + make_interval(secs => $3), expires_at) - interval '60 seconds'
+                OR last_seen_at < ${T} - interval '60 seconds')
+         RETURNING idle_expires_at AS "idleExpiresAt", last_seen_at AS "lastSeenAt"`,
         [now(), idHash, idle],
       );
       const { role, email, displayName, ...rest } = row;
@@ -231,6 +271,7 @@ export function createSessions<Ext extends object = Record<never, never>>(
         ...rest,
         idHash,
         idleExpiresAt: slid?.idleExpiresAt ?? row.idleExpiresAt,
+        lastSeenAt: slid?.lastSeenAt ?? row.lastSeenAt,
       };
       const user: ActorUser = { id: row.userId, role, email, displayName };
       const ext = options.extendActor
@@ -263,6 +304,18 @@ export function createSessions<Ext extends object = Record<never, never>>(
       );
     },
 
+    async revokeById(publicId, userId) {
+      if (!UUID.test(publicId)) return false;
+      return (
+        (await revokeWhere(
+          sql,
+          `s.public_id = $2::uuid AND s.user_id = $3
+           AND s.expires_at > ${T} AND s.idle_expires_at > ${T}`,
+          [publicId, userId],
+        )) > 0
+      );
+    },
+
     async revokeAll(userId, db) {
       return revokeWhere(db ?? sql, "s.user_id = $2", [userId]);
     },
@@ -272,7 +325,7 @@ export function createSessions<Ext extends object = Record<never, never>>(
         `SELECT ${SESSION_COLUMNS} FROM ${sessions} s
          WHERE s.user_id = $2 AND s.revoked_at IS NULL
            AND s.expires_at > ${T} AND s.idle_expires_at > ${T}
-         ORDER BY s.created_at DESC, s.id_hash`,
+         ORDER BY s.created_at DESC, s.public_id`,
         [now(), userId],
       );
     },

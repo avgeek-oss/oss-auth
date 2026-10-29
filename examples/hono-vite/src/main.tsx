@@ -1,16 +1,19 @@
 // The page, on @avgeek-oss/auth-client and its React hooks: sign-in, the
-// session, step-up for a sensitive action, API keys and connected apps, and
-// at /oauth/consent the consent screen for an MCP client. It has no styling
+// session, step-up for a sensitive action, the person's sessions, API keys
+// and connected apps, and at /oauth/consent the consent screen for an MCP
+// client. It has no styling
 // of its own: the design system owns how these screens look.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   createAuthClient,
   readAuthError,
   readAuthRedirectError,
   withoutAuthRedirectError,
+  type ActiveSession,
   type IssuedApiKey,
   type Role,
+  type SignOutResult,
 } from "@avgeek-oss/auth-client";
 import {
   AuthProvider,
@@ -98,9 +101,69 @@ function Session() {
         </button>
       </p>
       <p role="status">{stepUp.error?.message ?? result}</p>
+      <Sessions />
       <ApiKeys />
       <ConnectedApps />
     </>
+  );
+}
+
+function Sessions() {
+  const auth = useAuthClient();
+  const { refresh } = useSession();
+  const [sessions, setSessions] = useState<ActiveSession[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(
+    () =>
+      auth.sessions.list().then(
+        (list) => {
+          setSessions(list);
+          setError(null);
+        },
+        (failure: Error) => setError(failure.message),
+      ),
+    [auth],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Ending this page's own session signs it out, as Sign out does.
+  const signedOut = async ({ endSessionUrl }: SignOutResult) => {
+    if (endSessionUrl) location.assign(endSessionUrl);
+    else await refresh();
+  };
+  const signOut = (session: ActiveSession) =>
+    auth.sessions.revoke(session.id).then(
+      (result) => (result.current ? signedOut(result) : load()),
+      (failure: Error) => setError(failure.message),
+    );
+  const everywhere = () =>
+    auth.sessions
+      .signOutEverywhere()
+      .then(signedOut, (failure: Error) => setError(failure.message));
+
+  return (
+    <section>
+      <h2>Sessions</h2>
+      {error && <p role="alert">{error}</p>}
+      <ul>
+        {(sessions ?? []).map((session) => (
+          <li key={session.id}>
+            {session.browser ?? "Unknown browser"} on{" "}
+            {session.os ?? "an unknown system"}
+            {session.current ? " (this browser)" : ""}, signed in{" "}
+            {new Date(session.createdAt).toLocaleString()}, last active{" "}
+            {new Date(session.lastSeenAt).toLocaleString()}{" "}
+            <button onClick={() => void signOut(session)}>Sign out</button>
+          </li>
+        ))}
+      </ul>
+      <p>
+        <button onClick={() => void everywhere()}>Sign out everywhere</button>
+      </p>
+    </section>
   );
 }
 

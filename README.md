@@ -11,11 +11,11 @@ Shared sign-in, provisioning and access control for Avgeek OSS apps: Mill, Poste
 | `@avgeek-oss/auth-core/jobs`                      | server  | Sweeps of expired and revoked rows: `runAuthJobs` for a job runner, `runAuthWorker` in process.         |
 | `@avgeek-oss/auth-core/mcp`                       | server  | The OAuth 2.1 authorization server for MCP clients, and the middleware that checks its tokens.          |
 | `@avgeek-oss/auth-core/rate-limits`               | server  | Rate limits in Postgres (GCRA), client IPs behind trusted proxies, and the default policies.            |
-| `@avgeek-oss/auth-core/sessions`                  | server  | Sessions with absolute and idle expiry, revocation and step-up.                                         |
+| `@avgeek-oss/auth-core/sessions`                  | server  | Sessions with absolute and idle expiry, revocation, listing and step-up.                                |
 | `@avgeek-oss/auth-core/scim`                      | server  | The SCIM 2.0 server for Users and Groups, with roles from group membership.                             |
-| `@avgeek-oss/auth-core/hono`                      | server  | `createAuth`: the `/auth` routes and the role, step-up and CSRF middleware for a Hono API.              |
+| `@avgeek-oss/auth-core/hono`                      | server  | `createAuth`: the `/auth` routes, the people directory, and role, step-up and CSRF middleware for Hono. |
 | `@avgeek-oss/auth-core/testing`                   | tests   | A mock OpenID provider and a cookie-jar browser for flow tests.                                         |
-| [`@avgeek-oss/auth-client`](packages/auth-client) | browser | The auth API from the browser: session, sign-in and step-up URLs, API keys, connected apps and consent. |
+| [`@avgeek-oss/auth-client`](packages/auth-client) | browser | The auth API from the browser: session, sign-in, sessions, API keys, connected apps, consent, people.   |
 | `@avgeek-oss/auth-client/react`                   | browser | `AuthProvider`, `useSession`, `useRequireRole`, `useStepUp` and data hooks, without styling.            |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the design and the contract each app implements.

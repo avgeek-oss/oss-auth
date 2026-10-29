@@ -25,6 +25,7 @@ const BUNDLED = [
   "0006_rate_limits.sql",
   "0007_secret_rotation.sql",
   "0008_role_source.sql",
+  "0009_sessions_directory.sql",
 ];
 const extra = (
   name: string,

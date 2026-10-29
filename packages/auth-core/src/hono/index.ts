@@ -36,6 +36,14 @@ import {
   type SessionRecord,
   type Sessions,
 } from "../sessions/index.js";
+import { listDirectory, parseDirectoryQuery } from "./directory.js";
+
+export type {
+  DirectoryPage,
+  DirectoryRoleSource,
+  DirectoryStatus,
+  DirectoryUser,
+} from "./directory.js";
 
 /** The Hono variables auth-core sets on every request it sees. */
 export interface AuthVariables<Ext extends object> {
@@ -118,9 +126,11 @@ export interface Auth<Ext extends object> {
   /**
    * Mount under `basePath`: `GET /sign-in`, `GET /callback`,
    * `POST /sign-out`, `GET /session`, `GET /step-up`,
-   * `POST /backchannel-logout`, and the API key routes `GET /api-keys`,
+   * `POST /backchannel-logout`, the API key routes `GET /api-keys`,
    * `POST /api-keys`, `POST /api-keys/:id/rotate` and
-   * `DELETE /api-keys/:id`.
+   * `DELETE /api-keys/:id`, the caller's own sessions `GET /sessions`,
+   * `DELETE /sessions/:id` and `POST /sessions/sign-out-everywhere`, and
+   * the admins' people directory `GET /admin/users`.
    */
   readonly routes: Hono<AuthEnv<Ext>>;
   readonly middleware: {
@@ -245,6 +255,46 @@ function bearerToken(c: Context): string | null {
   const header = c.req.header("authorization");
   if (header === undefined || !/^bearer(\s|$)/i.test(header)) return null;
   return /^bearer +([^\s]+) *$/i.exec(header)?.[1] ?? "";
+}
+
+/**
+ * One of the caller's sessions as `GET /sessions` shows it: its public id,
+ * never the token or its hash.
+ */
+export interface SessionView {
+  readonly id: string;
+  readonly createdAt: string;
+  /** The last request, to within a minute. */
+  readonly lastSeenAt: string;
+  /** When it ends unless used before then. */
+  readonly idleExpiresAt: string;
+  /** When it ends however much it is used. */
+  readonly expiresAt: string;
+  /** When the person last authenticated at the provider in it. */
+  readonly authenticatedAt: string;
+  /** The browser family at sign-in, such as `Firefox`, or `null`. */
+  readonly browser: string | null;
+  /** The operating system at sign-in, such as `macOS`, or `null`. */
+  readonly os: string | null;
+  /** True for the session that made this request. */
+  readonly current: boolean;
+}
+
+function sessionView(
+  session: SessionRecord,
+  currentId: string | null,
+): SessionView {
+  return {
+    id: session.publicId,
+    createdAt: session.createdAt.toISOString(),
+    lastSeenAt: session.lastSeenAt.toISOString(),
+    idleExpiresAt: session.idleExpiresAt.toISOString(),
+    expiresAt: session.expiresAt.toISOString(),
+    authenticatedAt: session.authenticatedAt.toISOString(),
+    browser: session.browser,
+    os: session.os,
+    current: session.publicId === currentId,
+  };
 }
 
 /** An API key as the routes show it: never its secret or hash. */
@@ -628,8 +678,15 @@ export function createAuth<Ext extends object = Record<never, never>>(
               authenticatedAt: new Date(Math.min(authTime ?? now, now)),
               amr,
               providerSid: typeof claims.sid === "string" ? claims.sid : null,
+              userAgent: c.req.header("user-agent") ?? null,
             },
             tx,
+          );
+          await tx.query(
+            `UPDATE ${quoteIdent(config.schema)}.users
+             SET last_sign_in_at = GREATEST(last_sign_in_at, $2::timestamptz)
+             WHERE id = $1`,
+            [result.user.id, created.session.createdAt],
           );
           return { ...result, token: created.token };
         },
@@ -656,16 +713,23 @@ export function createAuth<Ext extends object = Record<never, never>>(
     }
   });
 
+  /**
+   * Clears the session cookie and returns the provider's logout URL to
+   * visit next, or `null` when it has none or cannot be reached.
+   */
+  const endBrowserSession = async (c: Context): Promise<string | null> => {
+    deleteCookie(c, sessionCookie, cookieOptions);
+    try {
+      return await oidc.endSessionUrl(`${web}/`);
+    } catch {
+      return null;
+    }
+  };
+
   routes.post("/sign-out", trustedOrigin, actor, async (c) => {
     const session = c.get("session");
     if (session) await sessions.revoke(session.idHash);
-    deleteCookie(c, sessionCookie, cookieOptions);
-    let endSessionUrl: string | null = null;
-    try {
-      endSessionUrl = await oidc.endSessionUrl(`${web}/`);
-    } catch {
-      endSessionUrl = null;
-    }
+    const endSessionUrl = await endBrowserSession(c);
     c.header("Cache-Control", "no-store");
     return c.json({ endSessionUrl });
   });
@@ -900,6 +964,79 @@ export function createAuth<Ext extends object = Record<never, never>>(
     );
     if (!revoked) throw new AuthRequestError("not_found", "No such API key.");
     return c.body(null, 204);
+  });
+
+  // Sessions -----------------------------------------------------------------
+
+  // A person's own browser sessions. A key has no session to show or end.
+  routes.use("/sessions/*", actor, trustedOrigin, async (c, next) => {
+    const current = c.get("actor");
+    if (!current) throw unauthenticated();
+    if (current.credential.kind !== "session")
+      throw new AuthRequestError(
+        "forbidden",
+        "Sessions are managed from a signed-in session.",
+        { reason: "session_required" },
+      );
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
+
+  /** The caller's session; the middleware above guarantees one. */
+  const ownSession = (c: Context<AuthEnv<Ext>>): SessionRecord => {
+    const session = c.get("session");
+    if (!session) throw unauthenticated();
+    return session;
+  };
+
+  routes.get("/sessions", async (c) => {
+    const current = ownSession(c);
+    const list = await sessions.list(current.userId);
+    return c.json({
+      sessions: list.map((session) => sessionView(session, current.publicId)),
+    });
+  });
+
+  routes.post(
+    "/sessions/sign-out-everywhere",
+    rateLimit("sessions.write", userKey),
+    async (c) => {
+      const current = ownSession(c);
+      const revoked = await sessions.revokeAll(current.userId);
+      const endSessionUrl = await endBrowserSession(c);
+      return c.json({ revoked, endSessionUrl });
+    },
+  );
+
+  routes.delete(
+    "/sessions/:id",
+    rateLimit("sessions.write", userKey),
+    async (c) => {
+      const current = ownSession(c);
+      const id = c.req.param("id");
+      // Someone else's session is not found, exactly like an unknown id.
+      if (!(await sessions.revokeById(id, current.userId)))
+        throw new AuthRequestError("not_found", "No such session.");
+      if (id.toLowerCase() !== current.publicId)
+        return c.json({ current: false, endSessionUrl: null });
+      // The caller's own session: the same as signing out.
+      const endSessionUrl = await endBrowserSession(c);
+      return c.json({ current: true, endSessionUrl });
+    },
+  );
+
+  // The people directory ------------------------------------------------------
+
+  // Read-only: roles and access are managed at the identity provider.
+  routes.get("/admin/users", actor, requireRole("admin"), async (c) => {
+    const query = parseDirectoryQuery({
+      q: c.req.query("q"),
+      status: c.req.query("status"),
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(await listDirectory(sql, config, query));
   });
 
   const selfCheck = config.selfCheck

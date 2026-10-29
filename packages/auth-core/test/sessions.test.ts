@@ -312,6 +312,93 @@ describe.skipIf(!databaseUrl).each(adapters)(
       expect(await sessions.lookup(other)).toBeNull();
     });
 
+    it("gives each session a public id and records only a user agent summary", async () => {
+      now = new Date();
+      const userId = await user();
+      const ua =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0";
+      const { session } = await sessions.create({
+        userId,
+        authenticatedAt: now,
+        amr: [],
+        providerSid: null,
+        userAgent: ua,
+      });
+      expect(session.publicId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      expect(session.publicId).not.toBe(session.idHash);
+      expect(session).toMatchObject({ browser: "Firefox", os: "macOS" });
+      expect(session.lastSeenAt.getTime()).toBe(session.createdAt.getTime());
+      // Nothing in the row holds the header, the token or an address.
+      const [row] = await sql.query<{ json: string }>(
+        `SELECT row_to_json(s)::text AS "json" FROM ${t("sessions")} s WHERE id_hash = $1`,
+        [session.idHash],
+      );
+      expect(row?.json).not.toMatch(/Mozilla|Gecko|152|Intel/);
+      const { session: bare } = await start(userId);
+      expect(bare).toMatchObject({ browser: null, os: null });
+    });
+
+    it("records when a session was last seen, at most once a minute and until its end", async () => {
+      now = new Date();
+      const { token, session } = await start(await user());
+      advance(30);
+      expect((await sessions.lookup(token))?.session.lastSeenAt.getTime()).toBe(
+        session.createdAt.getTime(),
+      );
+      advance(31);
+      expect((await sessions.lookup(token))?.session.lastSeenAt.getTime()).toBe(
+        now.getTime(),
+      );
+      // Within the idle timeout of the absolute expiry the idle expiry no
+      // longer moves, but the sighting still does.
+      for (let hour = 1; hour <= 11; hour++) {
+        advance(HOUR);
+        await sessions.lookup(token);
+      }
+      advance(HOUR / 2);
+      const late = await sessions.lookup(token);
+      expect(late?.session.lastSeenAt.getTime()).toBe(now.getTime());
+      expect(late?.session.idleExpiresAt.getTime()).toBe(
+        session.expiresAt.getTime(),
+      );
+      expect(
+        (await sessions.list(session.userId))[0]?.lastSeenAt.getTime(),
+      ).toBe(now.getTime());
+    });
+
+    it("revokes a session by public id only for its owner, and only while it lives", async () => {
+      now = new Date();
+      const alice = await user();
+      const bob = await user();
+      const a = await start(alice);
+      const b = await start(bob);
+      expect((await sessions.list(alice)).map((s) => s.publicId)).toEqual([
+        a.session.publicId,
+      ]);
+      // Another person's session, an unknown id and a malformed one: false.
+      expect(await sessions.revokeById(b.session.publicId, alice)).toBe(false);
+      expect(await sessions.lookup(b.token)).not.toBeNull();
+      expect(
+        await sessions.revokeById(
+          "00000000-0000-4000-8000-000000000000",
+          alice,
+        ),
+      ).toBe(false);
+      for (const id of ["", "x", a.session.idHash, `${a.session.publicId}'`])
+        expect(await sessions.revokeById(id, alice)).toBe(false);
+      // The owner's, in either case: once.
+      expect(
+        await sessions.revokeById(a.session.publicId.toUpperCase(), alice),
+      ).toBe(true);
+      expect(await sessions.revokeById(a.session.publicId, alice)).toBe(false);
+      expect(await sessions.lookup(a.token)).toBeNull();
+      // An expired session is not revoked: it is already over.
+      advance(13 * HOUR);
+      expect(await sessions.revokeById(b.session.publicId, bob)).toBe(false);
+    });
+
     it("remembers logout token ids once and cleans up expired ones", async () => {
       const jtis = postgresJtiStore(schema);
       const later = new Date(Date.now() + 600_000);

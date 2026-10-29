@@ -1,5 +1,6 @@
 import { AuthClientError } from "./errors.js";
 import type {
+  ActiveSession,
   AdminApi,
   ApiKey,
   ApiKeysApi,
@@ -10,7 +11,11 @@ import type {
   ConsentDecision,
   ConsentRequest,
   IssuedApiKey,
+  RevokeSessionResult,
+  SessionsApi,
+  SignOutEverywhereResult,
   SignOutResult,
+  UserPage,
 } from "./types.js";
 import { addReturnTo } from "./urls.js";
 
@@ -71,10 +76,12 @@ export interface AuthClient<Ext extends object = Record<string, unknown>> {
    * navigate to next, or `null`.
    */
   readonly signOut: () => Promise<string | null>;
+  /** The person's browser sessions: list them, and sign out one or all. */
+  readonly sessions: SessionsApi;
   readonly apiKeys: ApiKeysApi;
   readonly connectedApps: ConnectedAppsApi;
   readonly consent: ConsentApi;
-  /** For admins: other people's keys and connected apps. */
+  /** For admins: other people's keys and connected apps, and the directory. */
   readonly admin: AdminApi;
 }
 
@@ -241,6 +248,26 @@ export function createAuthClient<Ext extends object = Record<string, unknown>>(
         .endSessionUrl;
     },
 
+    sessions: {
+      list: async () =>
+        (
+          await request<{ sessions: ActiveSession[] }>(
+            "GET",
+            `${auth}/sessions`,
+          )
+        ).sessions,
+      revoke: (session) =>
+        request<RevokeSessionResult>(
+          "DELETE",
+          `${auth}/sessions/${id(session)}`,
+        ),
+      signOutEverywhere: () =>
+        request<SignOutEverywhereResult>(
+          "POST",
+          `${auth}/sessions/sign-out-everywhere`,
+        ),
+    },
+
     apiKeys: {
       list: () => keys(""),
       create: (input) =>
@@ -275,6 +302,24 @@ export function createAuthClient<Ext extends object = Record<string, unknown>>(
       connectedApps: {
         list: (userId) => apps(`?user=${id(userId)}`),
         revoke: revokeApp,
+      },
+      users: {
+        list: (input = {}) => {
+          const query = new URLSearchParams();
+          for (const [name, value] of [
+            ["q", input.q],
+            ["status", input.status],
+            ["cursor", input.cursor],
+            ["limit", input.limit],
+          ] as const)
+            if (value !== undefined && value !== null && value !== "")
+              query.set(name, String(value));
+          const search = query.toString();
+          return request<UserPage>(
+            "GET",
+            `${auth}/admin/users${search ? `?${search}` : ""}`,
+          );
+        },
       },
     },
   };

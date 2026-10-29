@@ -1,6 +1,6 @@
 # Reference app: Hono and Vite
 
-A Hono API using `createAuth` from `@avgeek-oss/auth-core/hono`, and a one-page React front end on Vite built on [`@avgeek-oss/auth-client`](../../packages/auth-client) and its hooks. It has **Sign in**, the current user and role, **Sign out**, a **Sensitive action** that needs a sign-in within the last minute (so it triggers step-up, and resumes afterwards), API keys and connected apps. It is not published.
+A Hono API using `createAuth` from `@avgeek-oss/auth-core/hono`, and a one-page React front end on Vite built on [`@avgeek-oss/auth-client`](../../packages/auth-client) and its hooks. It has **Sign in**, the current user and role, **Sign out**, a **Sensitive action** that needs a sign-in within the last minute (so it triggers step-up, and resumes afterwards), the person's sessions with **Sign out** for each and **Sign out everywhere**, API keys and connected apps. It is not published.
 
 ```sh
 docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:18-alpine

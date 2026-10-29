@@ -301,7 +301,10 @@ describe.skipIf(!databaseUrl).each(adapters)(
     });
 
     it("moves a session to the current key on its next use", async () => {
-      const { token } = await createSessions({ sql, config: before }).create({
+      const { token, session } = await createSessions({
+        sql,
+        config: before,
+      }).create({
         userId,
         authenticatedAt: new Date(),
         amr: [],
@@ -324,6 +327,13 @@ describe.skipIf(!databaseUrl).each(adapters)(
         hashToken(deriveKey(NEW, "posted", "session"), token),
       );
       expect(found?.actor.credential.id).toBe(found?.session.idHash);
+      // Its public id stays, so the sessions list and revoking by id work.
+      expect(found?.session.publicId).toBe(session.publicId);
+      expect(
+        (await createSessions({ sql, config: after }).list(userId)).map(
+          (s) => s.publicId,
+        ),
+      ).toContain(session.publicId);
       // Twice is fine: the second finds it under the current key.
       expect(
         await createSessions({ sql, config: during }).lookup(token),

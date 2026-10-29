@@ -22,14 +22,19 @@ import {
   AuthClientError,
   createAuthClient,
   readAuthRedirectError,
+  type ActiveSession,
   type ApiKey,
   type AuthClient,
   type AuthSession,
   type ConnectedApp,
   type ConsentRequest,
+  type DirectoryUser,
   type FetchLike,
   type IssuedApiKey,
+  type RevokeSessionResult,
   type Role,
+  type SignOutEverywhereResult,
+  type UserPage,
 } from "@avgeek-oss/auth-client";
 import { createExampleApp } from "../src/app.ts";
 
@@ -139,6 +144,37 @@ const APP_SHAPE: Shape<ConnectedApp> = {
   restrictions: "object|null",
   createdAt: "string",
   lastUsedAt: "string|null",
+};
+const ACTIVE_SESSION_SHAPE: Shape<ActiveSession> = {
+  id: "string",
+  createdAt: "string",
+  lastSeenAt: "string",
+  idleExpiresAt: "string",
+  expiresAt: "string",
+  authenticatedAt: "string",
+  browser: "string|null",
+  os: "string|null",
+  current: "boolean",
+};
+const REVOKE_SESSION_SHAPE: Shape<RevokeSessionResult> = {
+  current: "boolean",
+  endSessionUrl: "string|null",
+};
+const EVERYWHERE_SHAPE: Shape<SignOutEverywhereResult> = {
+  revoked: "number",
+  endSessionUrl: "string|null",
+};
+const DIRECTORY_USER_SHAPE: Shape<DirectoryUser> = {
+  id: "string",
+  displayName: "string|null",
+  email: "string|null",
+  role: "role|null",
+  roleSource: "string|null",
+  status: "string",
+  createdAt: "string",
+  lastSignInAt: "string|null",
+  deactivatedAt: "string|null",
+  deletedAt: "string|null",
 };
 const CONSENT_SHAPE: Shape<ConsentRequest> = {
   client: {
@@ -253,7 +289,13 @@ describe.skipIf(!databaseUrl)("auth-client against the reference app", () => {
       redirectUris: [`${a.api}/auth/callback`, `${b.api}/auth/callback`],
       postLogoutRedirectUris: [`${WEB}/`],
     });
-    main = await start(a, `example_client_${stamp}`);
+    // The suite signs in from one address more often than the default
+    // sign-in limit allows a minute.
+    main = await start(a, `example_client_${stamp}`, {
+      EXAMPLE_RATE_LIMITS: JSON.stringify({
+        oidc: { limit: 300, periodSeconds: 60 },
+      }),
+    });
     limited = await start(b, `example_client_limits_${stamp}`, {
       EXAMPLE_RATE_LIMITS: JSON.stringify({
         "api-keys.write": { limit: 2, periodSeconds: 60 },
@@ -638,6 +680,123 @@ describe.skipIf(!databaseUrl)("auth-client against the reference app", () => {
     });
   });
 
+  it("lists the person's sessions, signs out another and this one, and signs out everywhere", async () => {
+    const laptop = page();
+    const phone = page();
+    const tablet = page();
+    for (const p of [laptop, phone, tablet]) await signIn(p, "grace");
+
+    const listed = await laptop.client.sessions.list();
+    expect(listed.length).toBeGreaterThanOrEqual(3);
+    for (const session of listed) {
+      expectShape(session, ACTIVE_SESSION_SHAPE);
+      for (const time of [
+        session.createdAt,
+        session.lastSeenAt,
+        session.idleExpiresAt,
+        session.expiresAt,
+        session.authenticatedAt,
+      ])
+        expect(time).toMatch(ISO);
+    }
+    expect(listed.filter((s) => s.current)).toHaveLength(1);
+    const phoneId =
+      (await phone.client.sessions.list()).find((s) => s.current)?.id ?? "";
+    expect(listed.map((s) => s.id)).toContain(phoneId);
+
+    // Another of the person's sessions.
+    const other = await laptop.client.sessions.revoke(phoneId);
+    expectShape(other, REVOKE_SESSION_SHAPE);
+    expect(other).toEqual({ current: false, endSessionUrl: null });
+    expect(await phone.client.getSession()).toBeNull();
+    expect(await laptop.client.getSession()).not.toBeNull();
+    expect(await failure(laptop.client.sessions.revoke(phoneId))).toMatchObject(
+      { code: "not_found", status: 404 },
+    );
+
+    // Someone else's is not found.
+    const ada = page();
+    await signIn(ada, "ada");
+    const adaId =
+      (await ada.client.sessions.list()).find((s) => s.current)?.id ?? "";
+    expect(await failure(laptop.client.sessions.revoke(adaId))).toMatchObject({
+      code: "not_found",
+    });
+
+    // This page's own: signed out, with the provider's logout URL.
+    const tabletId =
+      (await tablet.client.sessions.list()).find((s) => s.current)?.id ?? "";
+    const own = await tablet.client.sessions.revoke(tabletId);
+    expectShape(own, REVOKE_SESSION_SHAPE);
+    expect(own.current).toBe(true);
+    expect(own.endSessionUrl?.startsWith(mock.issuer)).toBe(true);
+    expect(await tablet.client.getSession()).toBeNull();
+
+    // Everywhere, this page included; Ada stays signed in.
+    const second = page();
+    await signIn(second, "grace");
+    const everywhere = await laptop.client.sessions.signOutEverywhere();
+    expectShape(everywhere, EVERYWHERE_SHAPE);
+    expect(everywhere.revoked).toBeGreaterThanOrEqual(2);
+    expect(everywhere.endSessionUrl?.startsWith(mock.issuer)).toBe(true);
+    expect(await laptop.client.getSession()).toBeNull();
+    expect(await second.client.getSession()).toBeNull();
+    expect(await ada.client.getSession()).not.toBeNull();
+  });
+
+  it("pages the people directory for admins, and nobody else", async () => {
+    const grace = page();
+    await signIn(grace, "grace");
+    const ada = page();
+    await signIn(ada, "ada");
+
+    const first = await ada.client.admin.users.list({ limit: 1 });
+    expect(Object.keys(first).sort()).toEqual(["nextCursor", "users"]);
+    expect(first.users).toHaveLength(1);
+    for (const user of first.users) expectShape(user, DIRECTORY_USER_SHAPE);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const everyone: DirectoryUser[] = [];
+    let next: UserPage = first;
+    everyone.push(...next.users);
+    while (next.nextCursor !== null) {
+      next = await ada.client.admin.users.list({
+        cursor: next.nextCursor,
+        limit: 1,
+      });
+      everyone.push(...next.users);
+    }
+    const all = await ada.client.admin.users.list();
+    expect(everyone.map((u) => u.id)).toEqual(all.users.map((u) => u.id));
+    for (const user of all.users) {
+      expectShape(user, DIRECTORY_USER_SHAPE);
+      expect(user.createdAt).toMatch(ISO);
+    }
+    expect(
+      (await ada.client.admin.users.list({ q: "GRACE@" })).users,
+    ).toMatchObject([
+      {
+        email: "grace@example.com",
+        displayName: "Grace",
+        role: "member",
+        roleSource: "claims",
+        status: "active",
+        lastSignInAt: expect.stringMatching(ISO),
+        deactivatedAt: null,
+        deletedAt: null,
+      },
+    ]);
+    expect(
+      (await ada.client.admin.users.list({ status: "deleted" })).users,
+    ).toEqual([]);
+    expect(
+      await failure(ada.client.admin.users.list({ cursor: "nope!" })),
+    ).toMatchObject({ code: "invalid_request", status: 400 });
+    expect(await failure(grace.client.admin.users.list())).toMatchObject({
+      code: "forbidden",
+      status: 403,
+    });
+  });
+
   it("is unauthenticated everywhere without a session", async () => {
     const p = page();
     for (const call of [
@@ -645,6 +804,10 @@ describe.skipIf(!databaseUrl)("auth-client against the reference app", () => {
       () => p.client.apiKeys.create({ name: "x", ceiling: "viewer" }),
       () => p.client.connectedApps.list(),
       () => p.client.consent.get("x"),
+      () => p.client.sessions.list(),
+      () => p.client.sessions.revoke("x"),
+      () => p.client.sessions.signOutEverywhere(),
+      () => p.client.admin.users.list(),
     ])
       expect(await failure(call())).toMatchObject({
         code: "unauthenticated",
