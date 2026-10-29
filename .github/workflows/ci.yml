@@ -159,7 +159,7 @@ jobs:
   # the repository away from the npm publish job.
   github-release:
     needs: publish
-    if: ${{ needs.publish.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     # About 10 seconds.
     timeout-minutes: 2
